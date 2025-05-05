@@ -3,7 +3,7 @@ import copy
 import logging
 logger = logging.getLogger("individual_logging")
 from torch.utils.data import ConcatDataset, DataLoader, Subset
-from data_process import create_fl_trust_root_dataset, data_process, quantity_based_label_dist_skew
+from data_process import data_process, quantity_based_label_dist_skew
 import torch
 import random
 import numpy as np
@@ -11,7 +11,7 @@ from collections import defaultdict, Counter
 import math
 from torch import nn
 from functools import partial
-from utilities import get_model
+from models.model_utils import get_model
 from utilities import (
     MinMax_attack,
     MinSum_attack,
@@ -25,6 +25,14 @@ from utilities import (
     grad_normlization_factor
 )
 
+from models.ch_mnist import Chmnist_13L
+from models.cifar10_18l import Cifar10_18L
+from models.convnet import ConvNet, channel_dict
+from models.ddpm import *
+from models.mnist_6l import Mnist_6L
+from models.model_utils import get_model
+from models.svhn_6l import Svhn_6L
+from FedOda import FedOda
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, attack_magnitude, dba_poisoning_per_batch=0.2, device=None):
@@ -49,7 +57,7 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
 
 
 
-def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epochs, g_epochs,
+def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epochs,
                      attack_method=None, malicious_client_ids=[], dba_poisoning_per_batch=0.2):
     c_sd_before = {}
 
@@ -124,6 +132,8 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
             c_grad_dict[client_id] = model_weight_diff(c_sd_before[client_id], 
                                                        mco_dict[client_id]["c_model"].state_dict(), 
                                                        attack_magnitude)
+        elif attack_method == 'FedOda':
+            pass
         mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
         grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
     return c_grad_dict
@@ -131,6 +141,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
 
 def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num):
     logger.info(f"non-iid type: {noniid_type}")
+    label_count_per_client_dict = None
     if noniid_type == 'label_skew':
         fl_data_dict, labels_per_client_dict = label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha)
     elif noniid_type == 'p-degree':
@@ -138,8 +149,8 @@ def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, 
         fl_data_dict = p_degree_non_iid(client_group, p_degree, fl_class_num, client_num, fl_train)
         labels_per_client_dict = {x:list(range(fl_class_num)) for x in list(range(client_num))}
     elif noniid_type == 'dirichlet':
-        fl_data_dict, labels_per_client_dict, _ = dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha) 
-    return fl_data_dict, labels_per_client_dict
+        fl_data_dict, labels_per_client_dict, label_count_per_client_dict = dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha) 
+    return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
 
 
 def p_degree_grouping(fl_class_num, client_num):
@@ -156,6 +167,7 @@ def p_degree_grouping(fl_class_num, client_num):
         client_group[group_id] = clients[:group_size]
         clients = clients[group_size:]
     return client_group
+
 
 def p_degree_non_iid(client_group, p_degree, fl_class_num, client_num, fl_train):
     fl_data_dict = {}
@@ -187,7 +199,6 @@ def p_degree_non_iid(client_group, p_degree, fl_class_num, client_num, fl_train)
                 
             logger.info(f"fl_data client{client_id} size:{len(fl_data_dict[client_id])}: {client_label_count}")
     return fl_data_dict
-
 
 
 def label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha):
@@ -673,7 +684,7 @@ def weight_to_model(model, weight):
     return model
 
 
-def fltrust_server_iteration(iter, c_epochs, g_epochs, g_lr, root_ds, mco_dict, batch_size):
+def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size):
         
     c_sd_before = copy.deepcopy(mco_dict[-1]["c_model"].state_dict())
 

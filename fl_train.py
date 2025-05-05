@@ -1,16 +1,10 @@
-import copy
 import datetime
 import logging
-import math
 import os
-import pickle
 import random
-import shutil
 import time
 from collections import Counter
-
 from logging import FileHandler, Formatter
-
 import numpy as np
 import torch
 from PIL import Image
@@ -20,7 +14,12 @@ from torch.utils.data import ConcatDataset, DataLoader, Subset
 import torchvision.transforms as T
 from tqdm import tqdm
 from collections import defaultdict
-
+from utilities import (
+    create_client_weights
+)
+from helper import *
+from csv_logging import CsvLogging
+from data_process import create_fl_trust_root_dataset
 
 from aggr.flame import flame_aggr
 from aggr.fltrust import cosScoreAndClipValue
@@ -29,43 +28,7 @@ from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 
-from csv_logging import CsvLogging
-from data_process import create_fl_trust_root_dataset, data_process, quantity_based_label_dist_skew
-from evaluation import (
-    calc_fid,
-    candidate_sensor_group_eval,
-    clients_cross_eval,
-    clients_g_model_generation,
-    clients_weights_from_analysis,
-    fid_bet_folders,
-    g_model_generate_dataset,
-    master_sensor_eval,
-    select_client_class_rep,
-    sensor_analysis,
-)
-from models.ch_mnist import Chmnist_13L
-from models.cifar10_18l import Cifar10_18L
-from models.convnet import ConvNet, channel_dict
-from models.ddpm import *
-from models.mnist_6l import Mnist_6L
-from models.model_utils import get_model
-from models.svhn_6l import Svhn_6L
-from models.unet_model import UNet_conditional
 
-from utilities import (
-    MinMax_attack,
-    MinSum_attack,
-    fang_attack,
-    label_mapping,
-    lie_attack,
-    model_weight_diff,
-    training_csv_logging,
-    create_client_weights,
-    grad_normlization,
-    grad_normlization_factor
-)
-
-from helper import *
 
 logger = logging.getLogger("individual_logging")
 
@@ -103,15 +66,12 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     defense = params['defense']
     aggr = params['aggr']
     aggr_c_lr = params['aggr_c_lr']
-    aggr_g_lr = params['aggr_g_lr']
     
     global fl_class_num
     fl_class_num = params['fl_class_num']
     fl_iter_num = params['fl_iter_num']
     server_optim_c_lr = params['server_optim_c_lr']
     server_batch_size = params['server_batch_size']
-    server_c_epochs = params['server_c_epochs']
-    server_g_epochs = params['server_g_epochs']
 
     c_model_name = params['c_model']
     c_epochs = params['c_epochs']
@@ -119,33 +79,14 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     c_lr = params['c_lr']
     client_batch_size = params['client_batch_size']
     clients_per_iter = params['clients_per_iter']
-    
-    g_model_name = params['g_model']
-    g_epochs = params['g_epochs']
-    g_lr = float(params['g_lr'])
-    g_in_channels = params['g_in_channels']
-    g_n_feat = params['g_n_feat']
-    unet_classes = params['unet_classes']
-    g_n_T = params['g_n_T']
-    g_ws_final = params['g_ws_final']
-    g_drop_prob = params['g_drop_prob']
-    g_betas = params['g_betas']
-    g_sample_each_class = params['g_sample_each_class']
-    ddmp_seq = params['ddmp_seq']
-    master_sensor = params['master_sensor']
-    train_datasize_per_label = params['train_datasize_per_label']
-    clients_eval_mode = params['clients_eval_mode']
+
     fltrust_root_iid = params['fltrust_root_iid']
     attack_magnitude = params['attack_magnitude']
-    init_c_epochs = params['init_c_epochs']
-    init_g_epochs = params['init_g_epochs']
     dba_poisoning_per_batch = params.get('dba_poisoning_per_batch', 0.2)
-    abbs = params.get('abbs', False)
     
-    candidate_sensors = sensors
     client_list = list(range(client_num))
     class_list = list(range(fl_class_num))
-    sensor_measure = params['sensor_measure']
+
     if 'server_model_agr' in params.keys():
         server_model_agr = params['server_model_agr']
     else:
@@ -170,19 +111,11 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     logger_filehandler.setFormatter(Formatter('%(asctime)s %(message)s (%(filename)s)', '%Y-%m-%d %H:%M:%S'))
     logger.addHandler(logger_filehandler)
     
-
-    logger.info(f"Master sensor: {master_sensor}")
-    logger.info(f"load {len(candidate_sensors)} candidate sensors:")
-    for sensor in candidate_sensors:
-        logger.info(f"  {sensor}")
     
     # create the FL data for client(s)
     # control n and label_skew_alpha or p-degree can get Desired non-iid and fully use dataset
     fl_data_dict, labels_per_client_dict = \
         create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num)
-
-    # FID dataset
-    # fid_ds = create_fl_trust_root_dataset(fl_train, False, "label_skew", 1.0, fl_class_num, sample_size=500*fl_class_num)
 
     # clients selection per iteration
     clients_selection_csv_header = ["iter"] + client_list
@@ -276,7 +209,6 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     
 
     # create models 
-    # client_num, device, c_model_name, c_lr, server_optim_c_lr, c_momentum, num_classes, dataset)
     mco_dict = create_fl_models(client_num, device, c_model_name,  c_lr, server_optim_c_lr, c_momentum,
                                 num_classes=fl_class_num,
                                 dataset=params['fl_task'])
@@ -303,7 +235,7 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
         client_selection_dict, _ = create_client_weights(client_selection, client_selection, client_list)
         clients_selection_csv.append_save_csv([iter] + list(dict(sorted(client_selection_dict.items())).values()))
         
-        logger.info("local training for clients' C+G models (AGR)")
+        logger.info("local training for clients' C models (AGR)")
         c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
                                    client_batch_size, attack_magnitude, dba_poisoning_per_batch, device=device)
@@ -330,14 +262,19 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
                 elif aggr == 'krum':
                     # best case half the cliets are malicious
                     # orgainal Krum select one client
-                    # multi-krum
                     f = client_num//2 - 1
                     m = 1 # single krum
                     c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
+                    benign_client_ids = krum_clients
                     print(f"krum clients: {krum_clients}")
+                elif aggr == "multi_krum":
+                    f = client_num//2 - 1
+                    m = client_num//2 - 1 # multi krum
+                    c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
+                    benign_client_ids = krum_clients
+                    print(f"multi-krum clients: {krum_clients}")                       
                 elif aggr == 'flame':
                     server_c_sd = mco_dict[-1]["c_model"].state_dict()
-                    # server_g_sd = mco_dict[-1]["g_model"].state_dict()
                     c_grad, flame_clients = flame_aggr(server_c_sd, c_grad_dict, exp_dir=exp_dir, iter=iter)
                     benign_client_ids = flame_clients
                     print(f"flame clients: {flame_clients}")
@@ -347,8 +284,8 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
                     c_grad = normbound_aggr(server_c_sd, c_grad_dict)
                 elif aggr == 'fltrust':
                     # train server with root dataset
-                    server_c_grad = fltrust_server_iteration(iter, c_epochs, g_epochs, g_lr, 
-                                                                            root_ds, mco_dict, batch_size=5)
+                    server_c_grad = fltrust_server_iteration(iter, c_epochs,
+                                                             root_ds, mco_dict, batch_size=5)
                     
                     # caculate trust score
                     FLTrustTotalScore = 1e-9
