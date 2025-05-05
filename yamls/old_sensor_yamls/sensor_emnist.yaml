@@ -1,0 +1,12 @@
+cuda_device: 6
+
+# server
+sensor: 'emnist' # 'mnist', 'svhn'
+class_num: 47
+adversarial_train: 'none' # 'none', "invert", "50invert-50normal", 'recolor'
+mult_datasize: 1 # 4
+master_sensor: 'CLIP'
+latent_dims: 128
+channel: 'RGB'
+batch_size: 100
+epochs: 20 # 10

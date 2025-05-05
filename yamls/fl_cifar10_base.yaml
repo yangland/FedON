@@ -1,0 +1,73 @@
+cuda_device: 6
+if_series: False
+
+# defense methods
+defense: "AGGR" # "AGGR", "FedEval"
+# "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum"
+aggr: "geometric_median"
+aggr_c_lr: 0.5
+aggr_g_lr: 0.7
+fltrust_root_iid: True # False, True
+
+# sensors
+sensor_dir: "saved_models"
+sensor_models: [] # "cifar10_none_20240906.pth",
+master_sensor: "none" # "CLIP", "FID", "none"
+sensor_embed_dim: 256
+
+# fl client
+n: 5 # total clients 
+m: 1 # malicious clients
+clients_per_iter: 5
+fl_class_num: 10
+fl_task: 'cifar10'
+c_model: "Cifar10_18L"
+g_model: "ContextUnet"
+ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
+noniid_type: "label_skew" # "p-degree", "label_skew"
+label_skew_alpha: 0.8 # if certain classes missing 0.5, 0.7, 1
+p-degree: 0.5
+# '2_label_flipping', 'fakedata', 'backdoor', 'opposite_colour', 
+# 'reverse_grad', 'label_perturbation', 'LIE', 'fang', 'none'
+attack_method: 'label_perturbation'
+# only for reverse_grad, backdoor 
+attack_magnitude: 1
+
+image_size: [3, 32, 32]
+c_epochs: 6 # 2, 5, 10
+c_lr: 0.001
+c_momentum: 0.9
+client_batch_size: 64
+
+g_epochs: 10 # 5, 10
+g_lr: 1e-4
+# g_batch_size: 256
+g_in_channels: 3 # 3 for svhn, 1 for mnist
+g_n_feat: 256
+unet_classes: 10
+g_n_T: 400
+g_ws_final: 0.5 # 0.5
+g_drop_prob: 0.1
+g_betas: [1e-4, 0.02]
+g_sample_each_class: 40
+
+fl_iter_num: 50
+server_optim_c_lr: 0.005
+server_batch_size: 64
+server_c_epochs: 6
+server_g_epochs: 10
+
+
+# visualization
+dist_type: "wasserstein" # "l2-geo", "wasserstein"
+iter_start_gen: 0
+
+
+# sensor detection
+clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
+train_datasize_per_label: 800
+init_c_epochs: 6
+init_g_epochs: 10
+sensor_measure: "geometric_median" # "Wasserstein"
+server_model_agr: "weighted_avg" # "generation"
+client_select_beta: 0.5

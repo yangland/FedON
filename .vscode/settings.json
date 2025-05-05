@@ -1,0 +1,8 @@
+{
+    "workbench.colorCustomizations": {
+        "activityBar.background": "#4D2010",
+        "titleBar.activeBackground": "#6B2D16",
+        "titleBar.activeForeground": "#FEFCFB"
+    },
+    "python.REPL.enableREPLSmartSend": false
+}
