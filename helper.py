@@ -470,6 +470,7 @@ def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
 
 def train_c_model(train_loader, model, criterion, optimizer, attack_method, client_id,
                   malicious_client_ids, optimizer_poison=None, dba_poisoning_per_batch=0.2, device=None):
+    # train the model for 1 epoch
     model.train()
     train_loss = 0.0
     correct = 0
