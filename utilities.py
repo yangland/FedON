@@ -605,3 +605,5 @@ def grad_normlization_factor(client_grad_dict):
         weights[client_id] = weight
 
     return clip_value, weights
+
+

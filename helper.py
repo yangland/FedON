@@ -33,6 +33,9 @@ from models.mnist_6l import Mnist_6L
 from models.model_utils import get_model
 from models.svhn_6l import Svhn_6L
 from FedOda import FedOda
+import torch.nn as nn
+import torch.nn.functional as F
+
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, attack_magnitude, dba_poisoning_per_batch=0.2, device=None):
@@ -782,3 +785,18 @@ def flatten_concatenation(matrix):
     for row in matrix:
         flat_list += row
     return flat_list
+
+
+class NegativeEntropyLoss(nn.Module):
+    """
+    A PyTorch loss that encourages output distributions with low confidence.
+    This is typically used to generate adversarial or malicious updates.
+    """
+    def __init__(self):
+        super(NegativeEntropyLoss, self).__init__()
+
+    def forward(self, logits, target=None):  # Accept target to match PyTorch interface
+        probs = F.softmax(logits, dim=1)
+        log_probs = F.log_softmax(logits, dim=1)
+        entropy = -torch.sum(probs * log_probs, dim=1)  # shape: [batch_size]
+        return -entropy.mean()

@@ -2,15 +2,22 @@ from models.convnet import ConvNet
 from models.mnist_6l import Mnist_6L
 from models.cifar10_18l import Cifar10_18L 
 from models.ddpm import ContextUnet    
-    
+from models.resnet import ResNet18
+from models.vgg import VGG13  # Placeholder for VGG13, replace with actual class if available
+import torchvision.models as models
+import torch.nn as nn
 
 def get_model(model):
     # Dictionary mapping model names to their corresponding classes
     model_dict = {    
-        "ConvNet": ConvNet,
+        "ConvNet": ConvNet, # good
         "Mnist_6L": Mnist_6L,
         "Cifar10_18L": Cifar10_18L,
-        "ContextUnet": ContextUnet
+        "ContextUnet": ContextUnet, 
+        "ResNet18": ResNet18, # good
+        "VGG13": VGG13,
+        "MobileNetV2": MobileNetV2, # good
+        "SqueezeNet": SqueezeNet,
     }
 
     # Check if the model name exists in the dictionary
@@ -19,3 +26,25 @@ def get_model(model):
     else:
         raise KeyError(f"Model '{model}' not found. Available models are: {', '.join(model_dict.keys())}")
 
+
+
+# Example MobileNetV2 wrapper
+class MobileNetV2(nn.Module):
+    def __init__(self, num_classes=10, dataset="cifar10"):
+        super(MobileNetV2, self).__init__()
+        self.model = models.mobilenet_v2(pretrained=False)
+        self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
+
+    def forward(self, x):
+        return self.model(x)
+
+# Example SqueezeNet wrapper
+class SqueezeNet(nn.Module):
+    def __init__(self, num_classes=10, dataset="cifar10"):
+        super(SqueezeNet, self).__init__()
+        self.model = models.squeezenet1_0(pretrained=False)
+        self.model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
+        self.model.num_classes = num_classes
+
+    def forward(self, x):
+        return self.model(x)

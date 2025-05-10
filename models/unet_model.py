@@ -218,4 +218,4 @@ model = UNet(c_in=3, c_out=3, time_dim=256, remove_deep_conv=False)
 
 # Total number of parameters
 total_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Total trainable parameters: {total_params}")
+# print(f"Total trainable parameters: {total_params}")
