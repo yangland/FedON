@@ -38,23 +38,32 @@ import torch.nn.functional as F
 
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
-                    fl_data_dict, mco_dict, batch_size, attack_magnitude, dba_poisoning_per_batch=0.2, device=None):
+                    fl_data_dict, mco_dict, batch_size, attack_magnitude, 
+                    dba_poisoning_per_batch=0.2, FedOda_class=None, device=None):
+
+    if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
+        if FedOda_class.server_model is None:
+            FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+        else:
+            FedOda_class.previous_server_model = copy.deepcopy(FedOda_class.server_model)
+            FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+    
     
     c_sd_before = train_c_models(client_selection, 
-                                                fl_data_dict,
-                                                batch_size, 
-                                                mco_dict, 
-                                                c_epochs,
-                                                attack_method,
-                                                malicious_client_ids,
-                                                dba_poisoning_per_batch)
+                                    fl_data_dict,
+                                    batch_size, 
+                                    mco_dict, 
+                                    c_epochs,
+                                    attack_method,
+                                    malicious_client_ids,
+                                    dba_poisoning_per_batch)
     
     c_grad_dict = {}
 
-
     # process for both benign and malicious clients
     c_grad_dict = grad_process_c_model(mco_dict, client_selection, c_sd_before,
-                                            malicious_client_ids, attack_method, attack_magnitude, device)
+                                            malicious_client_ids, attack_method, attack_magnitude, 
+                                            FedOda_class, device)
 
     return c_grad_dict
 
@@ -103,7 +112,8 @@ attack_magnitude_mapping = {
     'dba': 3
 }
 
-def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method, attack_magnitude, device):
+def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
+                         attack_magnitude, FedOda_class, device):
     c_grad_dict = {}
 
     # benign clients
@@ -136,7 +146,8 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
                                                        mco_dict[client_id]["c_model"].state_dict(), 
                                                        attack_magnitude)
         elif attack_method == 'FedOda':
-            pass
+            c_grad_dict[client_id], _ = FedOda_class.attack()
+        
         mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
         grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
     return c_grad_dict
@@ -402,7 +413,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
             mali_labels = [m_label1, m_label2]  
         elif attack_method == 'none':
             mali_labels = []
-        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum']:
+        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedOda']:
             mali_labels = list(range(class_num))
         else:
             print("attack_method unknown")
@@ -662,8 +673,6 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
                 )
 
     return test_loss, accuracy, per_class_accuracy, attack_success_rate
-
-
 
 
 def grad_add_to_model(model, lr, grad):

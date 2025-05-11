@@ -48,8 +48,6 @@ def main():
     m_logger.addHandler(m_logger_filehandler)
     
     m_logger.info(f"Defense: {defense} - {aggr}")
-    sensors = 'none'
-    device  = params['cuda_device']
 
     ds_percentage = params.get('ds_percentage', 1)
     
@@ -60,7 +58,7 @@ def main():
     
     if not if_series:
         m_logger.info(f"One exp, time:{current_time}")
-        fl_w_visualization(train_data, test_data, params, sensors, image_size, exp_dir, fl_task, defense, aggr, current_time)
+        fl_w_visualization(train_data, test_data, params, image_size, exp_dir, fl_task, defense, aggr, current_time)
     else:
         if params['noniid_type'] == 'label_skew':
             non_iid_params = params['label_skew_alphas']
@@ -100,13 +98,11 @@ def main():
                     
                 exp_num += 1
         
-        
 
-
-def fl_w_visualization(train_data, test_data, params, sensors, image_size, exp_dir, fl_task, defense, aggr, timestamp):
+def fl_w_visualization(train_data, test_data, params, image_size, exp_dir, fl_task, defense, aggr, timestamp):
         loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, \
         selected_clients_per_class_hist, self_eval_hist, attack_success_hist, fid = \
-            fl_training(train_data, test_data, params, sensors, image_size, exp_dir, timestamp)
+            fl_training(train_data, test_data, params, image_size, exp_dir, timestamp)
 
         if params['noniid_type'] == 'label_skew':
             non_iid_param = params['label_skew_alpha']
@@ -141,7 +137,6 @@ def fl_w_visualization(train_data, test_data, params, sensors, image_size, exp_d
         except:
             m_logger.info("plotting, error")
         
-
         
         return loss_vail_hist[-1], acc_vail_hist[-1], per_class_acc_vail_hist[-1], attack_success_hist[-1], fid
 

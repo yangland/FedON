@@ -27,12 +27,12 @@ from aggr.fedavg_median import coordinate_wise_median, fedavg, trimmed_mean
 from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
-
+from FedOda import *
 
 
 logger = logging.getLogger("individual_logging")
 
-def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timestamp):
+def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     client_num = params['n']
     malicious_num = params['m']
     global device
@@ -87,16 +87,6 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     client_list = list(range(client_num))
     class_list = list(range(fl_class_num))
 
-    if 'server_model_agr' in params.keys():
-        server_model_agr = params['server_model_agr']
-    else:
-        server_model_agr = "generation"
-        
-    if 'client_select_beta' in params.keys():
-        client_select_beta = params['client_select_beta']
-    else:
-        client_select_beta = 0.5 
-
 
     try:
         os.makedirs(exp_dir)
@@ -135,7 +125,7 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
                                                fl_class_num=fl_class_num, 
                                                sample_size=100)
 
-        
+    
     # malicious attack data modification
     if if_attack:
         fl_data_dict, malicious_client_ids, mali_labels = create_malicious_data(client_num, 
@@ -177,14 +167,30 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
         malicious_client_ids = [] # malicious clients' ids
         mali_labels = []
 
+    if attack_method == 'FedOda':
+        # create the pooled dataset for FedOda
+        pooled_ds = []
+        for client_id, client_data in fl_data_dict.items():
+            if client_id in malicious_client_ids:
+                pooled_ds.append(client_data)
+        
+        # pretrain the model to get attack direction
+        model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])
+        FedOda_ = FedOda(model_fn=model_fn, 
+                         device=device, 
+                         learning_rate=0.01, 
+                         reduce_factor=0.8)
+        max_attack_l2_dist, max_attack_acc = FedOda_.pretrain(iters=20, pooled_data=pooled_ds)
+        logger.info(f"max_attack_l2_dist: {max_attack_l2_dist}, max_attack_acc: {max_attack_acc}")
+    else:
+        FedOda_ = None
+        
     loss_acc_csv_header = ["iter", "loss", "accuracy"]
     loss_acc_csv = CsvLogging(f"{timestamp}_loss_acc", exp_dir, loss_acc_csv_header)
 
     attack_success_rate_csv_header = ['iter'] + mali_labels
     attack_success_rate_csv = CsvLogging(f"{timestamp}_attacks", exp_dir, attack_success_rate_csv_header)
 
-    fid_csv_header = ["iter", "avg"] + class_list
-    fid_csv = CsvLogging(f"{timestamp}_fid", exp_dir, fid_csv_header)
     c_weights_csv_header = ["iter"] + client_list
     c_weights_csv = CsvLogging(f"{timestamp}_c_weights", exp_dir, c_weights_csv_header)
 
@@ -236,16 +242,19 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
         clients_selection_csv.append_save_csv([iter] + list(dict(sorted(client_selection_dict.items())).values()))
         
         logger.info("local training for clients' C models (AGR)")
+        
+        # local training for clients' C models including attack
         c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
-                                   client_batch_size, attack_magnitude, dba_poisoning_per_batch, device=device)
+                                   client_batch_size, attack_magnitude, dba_poisoning_per_batch, 
+                                   FedOda_class = FedOda_, device=device)
 
 
         server_iter = 0
         fid_avg = 0
         t1 = time.time()
         
-        if  iter >=params["iter_start_gen"] :
+        if iter >=params["iter_start_gen"] :
             server_iter += 1
             if defense == 'AGGR':
                 if aggr == 'fedavg':
@@ -274,6 +283,7 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
                     benign_client_ids = krum_clients
                     print(f"multi-krum clients: {krum_clients}")                       
                 elif aggr == 'flame':
+                    # flame works with model weight, convert grad to model weight
                     server_c_sd = mco_dict[-1]["c_model"].state_dict()
                     c_grad, flame_clients = flame_aggr(server_c_sd, c_grad_dict, exp_dir=exp_dir, iter=iter)
                     benign_client_ids = flame_clients
@@ -363,8 +373,6 @@ def fl_training(fl_train, fl_test, params, sensors, image_size, exp_dir, timesta
     # save server models
     path_c_model=f"{exp_dir}/c_model_{iter}.pt"
     torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
-
-    
 
     logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
     logger.handlers.clear()
