@@ -10,7 +10,6 @@ from utilities import timestamp
 import shutil
 from visualization import plot_curve, per_class_accuracy_plot
 from sensor import Sensor
-from evaluation import master_sensor_z_dist
 from csv_logging import CsvLogging
 import torch
 

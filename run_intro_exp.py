@@ -46,10 +46,10 @@ class Config:
         self.iters = 20
         self.learning_rate = 0.01 # 0.001 for smaller datasets
         self.attack = "untargeted"
-        self.model_name = "ResNet18" # "ResNet18", "VGG13", "MobileNetv2", "SqueezeNet"
+        self.model_name = "ResNet18" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet",
         self.num_classes = 10
-        self.dataset = "cifar10"
-        self.device = "cuda:2" if torch.cuda.is_available() else "cpu"
+        self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
+        self.device = "cuda:3" if torch.cuda.is_available() else "cpu"
         self.client_num = 100
         self.noniid_type = "dirichlet"
         self.dirichlet_alpha = 100
@@ -206,26 +206,27 @@ class Visualizer:
         style_combinations = list(itertools.product(line_styles, markers))
 
         max_accuracy = results_matrix.max() * 100
-        threshold = 0.9 * max_accuracy
+        threshold = 0.75 * max_accuracy
 
-        for idx, (layer_name, color) in enumerate(zip(layer_names, colors)):
-            acc_curve = results_matrix[idx] * 100
-            min_acc = acc_curve.min()
+        # Compute min accuracy per layer
+        min_accs = [curve.min() * 100 for curve in results_matrix]
+        layer_infos = list(zip(layer_names, results_matrix, min_accs, colors))
+
+        # Filter layers with min acc below threshold
+        filtered_layers = [info for info in layer_infos if info[2] < threshold]
+
+        # If too many, keep only 10 with lowest min acc
+        if len(filtered_layers) > 10:
+            filtered_layers = sorted(filtered_layers, key=lambda x: x[2])[:10]
+
+        for idx, (layer_name, acc_curve, _, color) in enumerate(filtered_layers):
+            acc_curve = acc_curve * 100
             line_style, marker = style_combinations[idx % len(style_combinations)]
 
-            if min_acc < threshold:
-                label = layer_name
-                linewidth = 2
-                alpha = 1.0
-            else:
-                label = None
-                linewidth = 1.5
-                alpha = 0.5
-
             plt.plot(
-                L2_dists, acc_curve, label=label,
+                L2_dists, acc_curve, label=layer_name,
                 linestyle=line_style, marker=marker, color=color,
-                linewidth=linewidth, markersize=5, alpha=alpha
+                linewidth=2, markersize=5, alpha=1.0
             )
 
         if results_list_all is not None:
@@ -237,7 +238,7 @@ class Visualizer:
 
         handles, labels = plt.gca().get_legend_handles_labels()
         unique = dict(zip(labels, handles))
-        
+
         plt.legend(
             unique.values(), 
             unique.keys(), 
@@ -255,6 +256,7 @@ class Visualizer:
         plt.savefig(os.path.join(output_path, 'sensitivity_lines.png'))
         plt.close()
         logging.info("Saved sensitivity lines plot")
+
 
 # Helper functions
 def flatten_update(update_dict, device='cpu'):
@@ -277,7 +279,7 @@ class NegativeCrossEntropyLoss(nn.Module):
     def forward(self, outputs, labels):
         return -self.ce_loss(outputs, labels)
 
-def train_one_epoch_with_negative_ce(model, train_loader, device, max_retries = 50):
+def train_one_epoch_with_negative_ce(model, train_loader, device, max_retries=50):
     def contains_nan(tensor_list):
         return any(param is not None and torch.isnan(param).any() for param in tensor_list)
 
@@ -287,11 +289,14 @@ def train_one_epoch_with_negative_ce(model, train_loader, device, max_retries = 
     current_lr = initial_lr
     retry_count = 0
 
-    original_state = deepcopy(model.state_dict())
+    # Move model state to CPU to reduce GPU memory usage
+    original_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
     while retry_count < max_retries:
         retry_count += 1
-        model.load_state_dict(deepcopy(original_state))
+
+        # Restore model state to GPU
+        model.load_state_dict({k: v.to(device) for k, v in original_state.items()})
         optimizer = optim.SGD(model.parameters(), lr=current_lr)
         nan_detected = False
 
@@ -326,42 +331,30 @@ def train_one_epoch_with_negative_ce(model, train_loader, device, max_retries = 
     G_m = {}
     final_state = model.state_dict()
     for name in original_state:
-        if torch.isnan(final_state[name]).any():
+        final_tensor = final_state[name].cpu()
+        if torch.isnan(final_tensor).any():
             print(f"Warning: NaN in parameter {name} after training. Using zero change.")
             G_m[name] = torch.zeros_like(original_state[name])
         else:
-            G_m[name] = final_state[name] - original_state[name]
+            G_m[name] = final_tensor - original_state[name]
 
-    model.load_state_dict(original_state)
+    # Restore original model state to GPU
+    model.load_state_dict({k: v.to(device) for k, v in original_state.items()})
     return G_m, current_lr
 
 
 
+
 def apply_attack_magnitude(model, G_m, average_l2_norm, magnitudes):
-    total_norm = torch.sqrt(sum((g.float().norm() ** 2 for g in G_m.values())))
-    logging.info(f"G_m norm: {total_norm.item()}")
-
-    multi = average_l2_norm / total_norm
-    logging.info(f"Multiplier: {multi.item()}")
-
-    normalized_G_m = {name: g.float() * multi for name, g in G_m.items()}
-    total_norm_normalized = torch.sqrt(sum((g.norm() ** 2 for g in normalized_G_m.values())))
-    logging.info(f"Normalized G_m norm: {total_norm_normalized.item()}")
-
     attacked_models = []
     l2_distances = []
-    original_params = flatten_model(model.state_dict())
+    original_params = deepcopy(flatten_model(model.state_dict()))
 
     for magnitude in magnitudes:
-        malicious_model = deepcopy(model)
+        l2_budget = magnitude * average_l2_norm
+        print(f"Applying attack with L2 budget: {l2_budget}")
 
-        with torch.no_grad():
-            for name, param in malicious_model.named_parameters():
-                if name in normalized_G_m:
-                    param.add_(normalized_G_m[name] * magnitude)
-            for name, buffer in malicious_model.named_buffers():
-                if name in normalized_G_m and torch.is_floating_point(buffer):
-                    buffer.add_(normalized_G_m[name] * magnitude)
+        malicious_model = apply_attack_to_all_layers(model, G_m, l2_budget)
 
         attacked_models.append(malicious_model)
         malicious_params = flatten_model(malicious_model.state_dict())
@@ -369,6 +362,7 @@ def apply_attack_magnitude(model, G_m, average_l2_norm, magnitudes):
         l2_distances.append(distance.item())
 
     return attacked_models, l2_distances
+
 
 
 def apply_attack_to_specific_layer(model, G_m, l2_budget, layer_name):
@@ -390,29 +384,33 @@ def apply_attack_to_specific_layer(model, G_m, l2_budget, layer_name):
     with torch.no_grad():
         for name, param in new_model.named_parameters():
             if name == layer_name:
-                param.data += scaled_direction
+                param.data += scaled_direction.to(param.device)
 
     return new_model
 
 
 def apply_attack_to_all_layers(model, G_m, l2_budget):
-    total_norm = torch.sqrt(sum((g_m.float().norm() ** 2 for g_m in G_m.values())))
+    # Only consider named_parameters for norm calculation
+    total_norm = torch.sqrt(sum(
+        (G_m[name].float().norm() ** 2)
+        for name, param in model.named_parameters()
+        if name in G_m
+    ))
+
     if total_norm == 0:
         return model
-    
+
     scale = l2_budget / total_norm
     logging.info(f"Attack scale: {scale}")
-    
+
     attacked_model = deepcopy(model)
     with torch.no_grad():
         for name, param in attacked_model.named_parameters():
             if name in G_m:
                 param.data += scale * G_m[name].float().to(param.device)
-        for name, buffer in attacked_model.named_buffers():
-            if name in G_m and torch.is_floating_point(buffer):
-                buffer.data += scale * G_m[name].float().to(param.device)
-    
+
     return attacked_model
+
 
 
 def evaluate_and_record_per_layer_sensitivities(model, G_m, max_l2, num_records, test_data, device):
@@ -462,6 +460,12 @@ def get_dataset(dataset_name):
         T.ToTensor(),
         T.Normalize((0.5,), (0.5,))
     ])
+    
+    transform_img2 = T.Compose([
+        T.Resize((224, 224)),  # This will resize the image to 320x320
+        T.ToTensor(),
+        T.Normalize((0.5,), (0.5,))
+    ])
 
     if dataset_name == "mnist":
         train_data = datasets.MNIST(root='./data', train=True, download=True, transform=transform_img)
@@ -475,29 +479,40 @@ def get_dataset(dataset_name):
     elif dataset_name == "SVHN":
         train_data = datasets.SVHN(root='./data', split='train', download=True, transform=transform_img)
         test_data = datasets.SVHN(root='./data', split='test', download=True, transform=transform_img)
+    elif dataset_name == "Imagenette":
+        train_data = datasets.Imagenette(root='./data', split='train', size="320px", download=False, transform=transform_img2)
+        test_data = datasets.Imagenette(root='./data', split='val', size="320px", download=False, transform=transform_img2)
     return train_data, test_data
 
-def calculate_distance_matrix(flattened_updates, device):
-    # Compute similarity matrices
-    cos_diff_matrix = torch.zeros(len(flattened_updates), len(flattened_updates))
-    l2_diff_matrix = torch.zeros(len(flattened_updates), len(flattened_updates))
+def calculate_distance_matrix(flattened_updates, device='cpu'):
+    """
+    Calculates cosine similarity and L2 distance matrices between flattened model updates.
+    Optimized to run on CPU to reduce GPU memory usage.
+    """
+    num_updates = len(flattened_updates)
+    cos_diff_matrix = torch.zeros(num_updates, num_updates)
+    l2_diff_matrix = torch.zeros(num_updates, num_updates)
 
-    for i in range(len(flattened_updates)):
-        for j in range(i+1, len(flattened_updates)):
-            vec_i = flattened_updates[i].to(device)
-            vec_j = flattened_updates[j].to(device)
-            
-            cos_sim = F.cosine_similarity(vec_i.unsqueeze(0), vec_j.unsqueeze(0)).item()
+    for i in range(num_updates):
+        vec_i = flattened_updates[i].to('cpu')
+        for j in range(i + 1, num_updates):
+            vec_j = flattened_updates[j].to('cpu')
+
+            # Normalize vectors to avoid division by zero
+            if vec_i.norm() == 0 or vec_j.norm() == 0:
+                cos_sim = 0.0
+            else:
+                cos_sim = F.cosine_similarity(vec_i.unsqueeze(0), vec_j.unsqueeze(0)).item()
+
             l2_diff = torch.norm(vec_i - vec_j).item()
-            
+
             cos_diff_matrix[i, j] = 1 - cos_sim
             cos_diff_matrix[j, i] = 1 - cos_sim
             l2_diff_matrix[i, j] = l2_diff
             l2_diff_matrix[j, i] = l2_diff
-            
-            del vec_i, vec_j
-            torch.cuda.empty_cache()
+
     return cos_diff_matrix, l2_diff_matrix
+
 
 
 def get_flattened_updates(model_updates, device='cpu'):
@@ -587,8 +602,8 @@ def main():
         logging.info(f"Iteration {iter}: Accuracy = {accuracy:.4f}")
 
     # Compute flattened updates and metrics
-    flattened_updates = get_flattened_updates(model_updates, config.device)
-    flattened_state_dicts = get_flattened_updates(model_state_dicts, config.device)
+    flattened_updates = get_flattened_updates(model_updates, device='cpu')
+    flattened_state_dicts = get_flattened_updates(model_state_dicts, device='cpu')
 
     l2_norms = [u.norm().item() for u in flattened_updates]
     last_l2_norm = l2_norms[-1]
@@ -615,7 +630,12 @@ def main():
     logging.info("Starting attack experiments")
     modelt.load_state_dict(model0.state_dict())
     G_m, final_lr = train_one_epoch_with_negative_ce(modelt, train_loader, config.device, max_retries=50)
-    magnitudes = [x * 0.25 for x in range(0, 9)] + list(range(2, 21))
+    magnitudes = (
+    np.linspace(0, 0.01, 6, endpoint=True).tolist() +
+    np.linspace(0.01, 0.1, 6, endpoint=True).tolist() +
+    np.linspace(0.1 + 1e-6, 1, 6, endpoint=True).tolist() +
+    np.linspace(1, 20, 20, endpoint=True).tolist()
+)
     
     modelt.load_state_dict(model0.state_dict())
     attacked_models, l2_distances = apply_attack_magnitude(modelt, G_m, last_l2_norm, magnitudes)
@@ -629,8 +649,14 @@ def main():
         attack_accuracy_list.append(accuracy*100)
         logging.info(f"Attack {i}: Magnitude {magnitudes[i]}, Accuracy {accuracy*100:.2f}%")
 
-    max_att_index = min(enumerate(attack_accuracy_list), key=lambda x: x[1])[0]
+    max_att_index = next(
+    (i for i, acc in enumerate(attack_accuracy_list) if acc <= 10),
+    min(enumerate(attack_accuracy_list), key=lambda x: x[1])[0]
+    )
+
+    logging.info(f"max_att_index: {max_att_index}")
     max_attack_l2_dist = l2_distances[max_att_index]
+    logging.info(f"l2_distances[: {l2_distances}")
     logging.info(f"Maximum attack L2 distance: {max_attack_l2_dist:.4f}")
 
     Visualizer.plot_attack_accuracy(l2_distances, attack_accuracy_list, max_attack_l2_dist, output_folder)
@@ -639,14 +665,21 @@ def main():
     original_flat = flatten_model(model0_sd)
     benign_flat = flatten_model(modelt.state_dict())
     attacked_flat = flatten_model(attacked_models[max_att_index].state_dict())
-    models = [original_flat, benign_flat, attacked_flat]
+    tri_models = [original_flat, benign_flat, attacked_flat]
     
-    update_l2_diff_matrix = torch.zeros(3, 3)
-    for i in range(3):
-        for j in range(3):
-            update_l2_diff_matrix[i, j] = torch.norm(models[i] - models[j]).item()
+    _, l2_diff_matrix = calculate_distance_matrix(tri_models, config.device)
     
-    Visualizer.plot_triangle_relationship(update_l2_diff_matrix, output_folder)
+    Visualizer.plot_triangle_relationship(l2_diff_matrix, output_folder)
+    
+    # === Save model weights to disk ===
+    torch.save(model0_sd, os.path.join(output_folder, 'model0.pt'))
+    logging.info("Saved initial model weights to model0.pt")
+
+    torch.save(modelt.state_dict(), os.path.join(output_folder, 'modelt.pt'))
+    logging.info("Saved benign model weights to modelt.pt")
+
+    torch.save(attacked_models[max_att_index].state_dict(), os.path.join(output_folder, 'model_att.pt'))
+    logging.info("Saved attacked model weights to model_att.pt")
 
     # Sensitivity analysis
     logging.info("Starting sensitivity analysis")
