@@ -38,7 +38,7 @@ import torch.nn.functional as F
 
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
-                    fl_data_dict, mco_dict, batch_size, attack_magnitude, 
+                    fl_data_dict, mco_dict, batch_size, 
                     dba_poisoning_per_batch=0.2, FedOda_class=None, device=None):
 
     if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
@@ -56,13 +56,14 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
                                     c_epochs,
                                     attack_method,
                                     malicious_client_ids,
-                                    dba_poisoning_per_batch)
+                                    dba_poisoning_per_batch,
+                                    device=device)
     
     c_grad_dict = {}
 
     # process for both benign and malicious clients
     c_grad_dict = grad_process_c_model(mco_dict, client_selection, c_sd_before,
-                                            malicious_client_ids, attack_method, attack_magnitude, 
+                                            malicious_client_ids, attack_method,
                                             FedOda_class, device)
 
     return c_grad_dict
@@ -70,7 +71,7 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
 
 
 def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epochs,
-                     attack_method=None, malicious_client_ids=[], dba_poisoning_per_batch=0.2):
+                     attack_method=None, malicious_client_ids=[], dba_poisoning_per_batch=0.2, device=None):
     c_sd_before = {}
 
     for client_id in client_selection:
@@ -89,7 +90,8 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
                                         attack_method, client_id, 
                                         malicious_client_ids,
                                         optimizer_poison,
-                                        dba_poisoning_per_batch)
+                                        dba_poisoning_per_batch,
+                                        device=device)
             if epoch % 1 == 0:
                 logger.info(f"  client{client_id}_ep{epoch}: C-Model, loss: {loss:.6f}, train acc: {acc:.6f}")
         
@@ -101,7 +103,7 @@ attack_magnitude_mapping = {
     '2_label_flipping': 3,
     'MPAF': 3, # 1e6, 0
     'backdoor': 3,
-    'label_perturbation': 1,
+    'label_perturbation': 3,
     'fakedata': 1,
     'clear_label_backdoor': 1,
     'reverse_grad': 1,
@@ -109,11 +111,12 @@ attack_magnitude_mapping = {
     'MinMax': 1,
     'MinSum': 1,
     'LIE': 1,
-    'dba': 3
+    'dba': 3,
+    'FedOda': 1
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         attack_magnitude, FedOda_class, device):
+                         FedOda_class, device):
     c_grad_dict = {}
 
     # benign clients
@@ -305,7 +308,11 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
     return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
 
 
-
+def count_labels(pooled_ds):
+    label_counter = Counter()
+    for _, label in pooled_ds:
+        label_counter[label] += 1
+    return dict(label_counter)
 
 
 def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method, image_size, class_num):
@@ -489,7 +496,7 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
     train_loss = 0.0
     correct = 0
     trigger_value = 1
-
+    
     if attack_method == 'dba' and client_id in malicious_client_ids:
         print('dba client id', client_id)
 
@@ -561,7 +568,10 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
     original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=5)
     test_loader = original_test_loader  # default to original if no attack applies
-
+    
+    # Move model to device
+    model = model.to(device)
+    
     if attack_method == 'backdoor':
         test_targets = [x[1] for x in fl_test]
         indices = [idx for idx, target in enumerate(test_targets) if target == mali_labels[0]]
@@ -685,6 +695,8 @@ def grad_add_to_model(model, lr, grad):
             
             # Add the gradient to the model parameter, preserving the original dtype
             model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
+            # model_sd[key] = (model_sd[key] + grad_to_add.to(model_sd[key].device)).to(model_sd[key].dtype)
+
             
     model.load_state_dict(model_sd)  # This updates the original model object
 

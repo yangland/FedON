@@ -9,7 +9,6 @@ from logging import Formatter
 from utilities import timestamp
 import shutil
 from visualization import plot_curve, per_class_accuracy_plot
-from sensor import Sensor
 from csv_logging import CsvLogging
 import torch
 
@@ -88,7 +87,7 @@ def main():
                 sub_exp_dir = f"{exp_dir}/{current_time}_{attack_method}_{non_iid}"
                 
                 loss_vail_last_iter, acc_vail_last_iter, per_class_acc_vail_last_iter, attack_success_last_iter, fid = \
-                    fl_w_visualization(train_data, test_data, params, sensors, image_size, sub_exp_dir, fl_task, defense, aggr, current_time)
+                    fl_w_visualization(train_data, test_data, params, image_size, sub_exp_dir, fl_task, defense, aggr, current_time)
                 
                 
                 master_csv.append_save_csv([exp_num,
