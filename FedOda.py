@@ -4,6 +4,10 @@ import torch.optim as optim
 from copy import deepcopy
 import numpy as np
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import networkx as nx
+import os
+import random
 from run_intro_exp import (
     get_dataset,
     train_one_epoch_with_negative_ce,
@@ -32,6 +36,10 @@ class FedOda:
         
         self.server_model = None  # Server model
         self.previous_server_model = None
+
+        self.q_table = {}  # Q-table for RL
+        self.action_space = [-1, 0, 1]  # Actions: decrease, maintain, increase
+        self.state = None
         
     def pretrain(self, iters, pooled_data, test_data):
         """
@@ -165,11 +173,8 @@ class FedOda:
 
         return attacked_models, l2_distances
     
-    
+    """
     def attack(self):
-        """
-        Perform the attack on the server model
-        """
         device = self.device  # convenience
 
         # Step 1: Measure progress
@@ -220,7 +225,133 @@ class FedOda:
                 param.data += crafted_update[name].to(device)
 
         return crafted_update, attacked_model
+        """
 
+    def select_action(self, state):
+        # Epsilon-greedy policy
+        epsilon = 0.1
+        if random.uniform(0, 1) < epsilon:
+            return random.choice(self.action_space)
+        else:
+            return max(self.q_table.get(state, {}), key=lambda action: self.q_table.get(state, {}).get(action, 0), default=0)
+
+    def update_q_table(self, state, action, reward, next_state):
+        learning_rate = 0.1
+        discount_factor = 0.9
+        current_value = self.q_table.get(state, {}).get(action, 0)
+        next_max = max(self.q_table.get(next_state, {}).values(), default=0)
+        new_value = current_value + learning_rate * (reward + discount_factor * next_max - current_value)
+        if state not in self.q_table:
+            self.q_table[state] = {}
+        self.q_table[state][action] = new_value
+
+    def attack(self):
+        """
+        Perform the attack on the server model
+        """
+        device = self.device  # convenience
+
+        # Step 1: Measure progress
+        if self.previous_server_model is not None:
+            server_update = flatten_model(clone_model_params(self.server_model)).to(device) - \
+                            flatten_model(clone_model_params(self.previous_server_model)).to(device)
+
+            server_update_norm = torch.norm(server_update).to(device)
+
+            flat_att_direction = flatten_model(self.att_direction).to(device)
+
+            # Calculate the projection of the server update onto the attack direction
+            projection_on_att_direction = torch.dot(server_update, flat_att_direction) / torch.norm(flat_att_direction)
+
+            # Use the projection as the reward
+            reward = projection_on_att_direction.item()
+
+            # Determine the action based on the current state
+            self.state = (server_update_norm.item(), self.scaling_factor)
+            action = self.select_action(self.state)
+            self.scaling_factor += action
+
+            # Ensure scaling factor remains within certain bounds
+            self.scaling_factor = max(0.5, min(self.scaling_factor, 10))
+
+            # Update Q-table
+            next_state = (server_update_norm.item(), self.scaling_factor)
+            self.update_q_table(self.state, action, reward, next_state)
+
+        else:
+            # If no previous server model, set default values
+            server_update_norm = self.last_update_norm
+            flat_att_direction = flatten_model(self.att_direction).to(device)
+            self.state = (server_update_norm, self.scaling_factor)
+
+        print(f"Server update norm: {server_update_norm:.3f}")
+        print(f"self.scaling_factor: {self.scaling_factor:.3f}")
+
+        # Step 2: Craft malicious model update
+        crafted_flat_update = self.scaling_factor * server_update_norm * \
+                            (flat_att_direction / torch.norm(flat_att_direction))
+
+        # Step 3: Convert flat update to state_dict
+        crafted_update = {}
+        idx = 0
+        for name, param in self.server_model.state_dict().items():
+            numel = param.numel()
+            crafted_update[name] = crafted_flat_update[idx:idx + numel].view_as(param).clone().to(device)
+            idx += numel
+
+        # Step 4: Apply crafted update to server model
+        attacked_model = deepcopy(self.server_model)
+        with torch.no_grad():
+            for name, param in attacked_model.named_parameters():
+                param.data += crafted_update[name].to(device)
+
+        return crafted_update, attacked_model
+
+
+    def plot_distance_relationship(self, server_model, iteration, output_dir='plots'):
+        # Ensure the output directory exists
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Flatten models to compute L2 distances
+        flat_server = flatten_model(clone_model_params(server_model)).to(self.device)
+        flat_model0 = flatten_model(self.model0_sd).to(self.device)
+        flat_modelt = flatten_model(self.modelt_sd).to(self.device)
+        flat_modela = flatten_model({name: self.modelt_sd[name].cpu() + self.att_direction[name].cpu() for name in self.modelt_sd}).to(self.device)
+
+        # Calculate L2 distances
+        dist_0_t = torch.norm(flat_model0 - flat_modelt).item()
+        dist_t_a = torch.norm(flat_modelt - flat_modela).item()
+        dist_0_a = torch.norm(flat_model0 - flat_modela).item()
+        dist_s_0 = torch.norm(flat_server - flat_model0).item()
+        dist_s_t = torch.norm(flat_server - flat_modelt).item()
+        dist_s_a = torch.norm(flat_server - flat_modela).item()
+
+        # Create a graph for visualization
+        G = nx.Graph()
+        G.add_edges_from([
+            ("model0", "modelt", {'weight': dist_0_t}),
+            ("modelt", "modela", {'weight': dist_t_a}),
+            ("model0", "modela", {'weight': dist_0_a}),
+            ("server", "model0", {'weight': dist_s_0}),
+            ("server", "modelt", {'weight': dist_s_t}),
+            ("server", "modela", {'weight': dist_s_a}),
+        ])
+
+        # Position nodes using a spring layout
+        pos = nx.spring_layout(G, seed=42)
+
+        # Draw the graph
+        nx.draw(G, pos, with_labels=True, node_size=700, node_color='lightblue', font_size=10, font_weight='bold')
+        edge_labels = nx.get_edge_attributes(G, 'weight')
+        nx.draw_networkx_edge_labels(G, pos, edge_labels={(u, v): f"{w:.2f}" for u, v, w in G.edges(data='weight')})
+
+        plt.title("Distance Relationship of Server Model and Pretrained Models")
+        
+        # Save the plot to disk
+        plot_filename = os.path.join(output_dir, f"distance_relationship_iter_{iteration}.png")
+        plt.savefig(plot_filename)
+        plt.close()
+        print(f"Plot saved to {plot_filename}")
 
 
 def model_validation(model, criterion, test_data, device, class_num):

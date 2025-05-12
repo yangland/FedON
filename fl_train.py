@@ -251,6 +251,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                    client_batch_size, dba_poisoning_per_batch, 
                                    FedOda_class = FedOda_, device=device)
 
+        if attack_method == 'FedOda':
+            server_model = mco_dict[-1]["c_model"]
+            FedOda_.plot_distance_relationship(server_model, iter, output_dir=f'{exp_dir}/plots')
 
         server_iter = 0
         fid_avg = 0
