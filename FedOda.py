@@ -14,12 +14,13 @@ from run_intro_exp import (
 )
 
 class FedOda:
-    def __init__(self, model_fn, device, learning_rate=0.01, scaling_factor=8, reduce_factor=0.5):
+    def __init__(self, model_fn, device, learning_rate=0.01, scaling_factor=8, reduce_factor=0.5, increase_factor=1.1):
         # Model-related variables
         self.model_fn = model_fn
         self.device = device
         self.learning_rate = learning_rate
         self.reduce_factor = reduce_factor
+        self.increase_factor = increase_factor
         
         # State variables to be saved
         self.model0_sd = None      # Initial model state dict
@@ -189,6 +190,9 @@ class FedOda:
 
             if attack_cos_sim / benign_cos_sim <= torch.norm(flat_benign_direction) / torch.norm(flat_att_direction):
                 self.scaling_factor *= self.reduce_factor
+                # min scaling factor = 0.5
+                self.scaling_factor = max(self.scaling_factor, 0.5)
+
         else:
             server_update_norm = self.last_update_norm
 

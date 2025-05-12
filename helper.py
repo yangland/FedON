@@ -129,6 +129,9 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     # attack_magnitude affecting the c model
     attack_magnitude = attack_magnitude_mapping.get(attack_method, 1)
     
+    if attack_method == 'FedOda':
+        FedOda_attack = FedOda_class.attack()
+    
     # malicous clients
     for client_id in malicious_client_ids:
         if attack_method == 'reverse_grad':
@@ -149,7 +152,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
                                                        mco_dict[client_id]["c_model"].state_dict(), 
                                                        attack_magnitude)
         elif attack_method == 'FedOda':
-            c_grad_dict[client_id], _ = FedOda_class.attack()
+            c_grad_dict[client_id], _ = FedOda_attack
         
         mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
         grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
@@ -492,6 +495,7 @@ def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
 def train_c_model(train_loader, model, criterion, optimizer, attack_method, client_id,
                   malicious_client_ids, optimizer_poison=None, dba_poisoning_per_batch=0.2, device=None):
     # train the model for 1 epoch
+    model = model.to(device)
     model.train()
     train_loss = 0.0
     correct = 0

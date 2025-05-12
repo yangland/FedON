@@ -181,7 +181,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                          device=device, 
                          learning_rate=0.01, 
                          scaling_factor=8,
-                         reduce_factor=0.8)
+                         reduce_factor=0.8,
+                         increase_factor=1.05)
         
         max_attack_l2_dist, max_attack_acc, attack_accuracy_list, l2_distances, modelt_acc = \
             FedOda_.pretrain(iters=20, pooled_data=pooled_ds, test_data=fl_test)
@@ -276,7 +277,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
                 benign_client_ids = krum_clients
                 print(f"krum clients: {krum_clients}")
-            elif aggr == "multi_krum":
+            elif aggr == "multi-krum":
                 f = client_num//2 - 1
                 m = client_num//2 - 1 # multi krum
                 c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
