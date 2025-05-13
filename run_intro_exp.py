@@ -48,6 +48,7 @@ class Config:
         self.attack = "untargeted"
         self.model_name = "ResNet18" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet",
         self.num_classes = 10
+        self.mali_client_num = 10
         self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
         self.device = "cuda:3" if torch.cuda.is_available() else "cpu"
         self.client_num = 100
@@ -557,7 +558,7 @@ def main():
                              fl_class_num=config.num_classes)
 
     # Combine datasets from clients 0 to 9 as malicious clients's pooled data
-    combined_dataset = ConcatDataset([fl_data_dict[i] for i in range(10)])
+    combined_dataset = ConcatDataset([fl_data_dict[i] for i in range(config.mali_client_num)])
     train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=0)
     
     # Get models
