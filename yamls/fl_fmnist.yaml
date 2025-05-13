@@ -17,7 +17,7 @@ sensor_embed_dim: 256
 
 # fl client
 n: 100 # total clients 
-m: 40 # malicious clients
+m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
@@ -37,7 +37,7 @@ c_lr: 0.01
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 20
+fl_iter_num: 40
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1

@@ -3,7 +3,7 @@ from models.mnist_6l import Mnist_6L
 from models.cifar10_18l import Cifar10_18L 
 from models.ddpm import ContextUnet    
 from models.resnet import ResNet18
-from models.vgg import VGG13  # Placeholder for VGG13, replace with actual class if available
+from models.vgg import VGG13, VGG16
 import torchvision.models as models
 import torch.nn as nn
 
@@ -16,6 +16,7 @@ def get_model(model):
         "ContextUnet": ContextUnet, 
         "ResNet18": ResNet18, # good
         "VGG13": VGG13,
+        "VGG16": VGG16,  # Placeholder for VGG16, replace with actual class if available
         "MobileNetV2": MobileNetV2, # good
         "SqueezeNet": SqueezeNet,
     }

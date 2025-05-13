@@ -179,7 +179,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])
         FedOda_ = FedOda(model_fn=model_fn, 
                          device=device, 
-                         learning_rate=0.01, 
+                         learning_rate=0.001, 
                          scaling_factor=8,
                          reduce_factor=0.8,
                          increase_factor=1.05)
