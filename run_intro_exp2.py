@@ -21,6 +21,12 @@ import networkx as nx
 import math
 from functools import partial
 import itertools
+from torch.amp import autocast
+from torch.amp import GradScaler
+import gc
+
+# Set the environment variable before importing torch
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
 # Set up logging and output directory
@@ -43,10 +49,10 @@ def setup_output_directory(dataset, model_name, dir_path='experiments'):
 # Configuration class to hold all parameters
 class Config:
     def __init__(self):
-        self.iters = 30
-        self.learning_rate = 0.001 # 0.001 for smaller datasets
+        self.iters = 50
+        self.learning_rate = 0.01 # 0.001 for smaller datasets
         self.attack = "untargeted"
-        self.model_name = "ConvNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet",
+        self.model_name = "VGG13" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
         self.num_classes = 10
         self.mali_client_num = 10
         self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
@@ -54,7 +60,7 @@ class Config:
         self.client_num = 100
         self.noniid_type = "dirichlet"
         self.dirichlet_alpha = 1.0
-        self.batch_size = 32
+        self.batch_size = 32 # 32
 
 # Visualization functions
 class Visualizer:
@@ -602,6 +608,69 @@ def calculate_cos_dist_matrix(vectors):
 
     return cos_dist_matrix
 
+
+# Modified process_clients_in_batches function
+def process_clients_in_batches(model_fn, server_model_sd, benign_clients, fl_data_dict, batch_size, batch_size_clients, config):
+    scaler = GradScaler(device=config.device)
+    model_weights = []
+    
+    # Pre-allocate a single model for all clients to reuse
+    base_model = model_fn().to(config.device)
+    base_model.load_state_dict(server_model_sd)
+    
+    for batch_start in range(0, len(benign_clients), batch_size_clients):
+        batch_clients = benign_clients[batch_start:batch_start + batch_size_clients]
+        
+        for client_id in batch_clients:
+            logging.info(f"Training client {client_id}...")
+            
+            # Create fresh optimizer for each client
+            optimizer = torch.optim.SGD(base_model.parameters(), lr=config.learning_rate)
+            
+            client_train_loader = torch.utils.data.DataLoader(
+                fl_data_dict[client_id],
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=2,
+                pin_memory=True
+            )
+            
+            # Train client
+            base_model.train()
+            for inputs, labels in client_train_loader:
+                inputs, labels = inputs.to(config.device), labels.to(config.device)
+                
+                with autocast(device_type=config.device):
+                    outputs = base_model(inputs)
+                    loss = torch.nn.functional.cross_entropy(outputs, labels)
+                
+                optimizer.zero_grad(set_to_none=True)  # More memory efficient
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            
+            # Get client update and reset model
+            with torch.no_grad():
+                client_weights = {}
+                for name, param in base_model.state_dict().items():
+                    client_weights[name] = param.detach().cpu()
+                model_weights.append(client_weights)
+            
+            # Clear gradients and optimizer state
+            del optimizer
+            torch.cuda.empty_cache()
+            gc.collect()
+            
+            # Reset model to server state for next client
+            base_model.load_state_dict(server_model_sd)
+    
+    del base_model
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    return model_weights
+
+
 # Main experiment function
 def main():
     config = Config()
@@ -626,7 +695,7 @@ def main():
 
     # Combine datasets from malicious clients to form a pooled dataset
     combined_dataset = torch.utils.data.ConcatDataset([fl_data_dict[i] for i in range(config.mali_client_num)])
-    malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True)
+    malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
     # Get models
     model_class = get_model(config.model_name)
@@ -634,7 +703,7 @@ def main():
 
     # Initialize server model
     server_model = model_fn().to(config.device)
-    server_model_sd = deepcopy(server_model.state_dict())
+    # server_model_sd = deepcopy(server_model.state_dict())
     initial_server_flat = flatten_model(server_model.state_dict())
     c_criterion = nn.CrossEntropyLoss()
 
@@ -658,30 +727,26 @@ def main():
     logging.info("Starting federated training loop")
 
     for iter in range(config.iters):
-        model_updates = []
-
-        # Benign client updates using FedAvg
-        for client_id in benign_clients:
-            client_model = model_fn().to(config.device)
-            client_model.load_state_dict(server_model_sd)  # Use server_model_sd for loading
-            optimizer = optim.SGD(client_model.parameters(), lr=config.learning_rate)
-
-            client_train_loader = DataLoader(fl_data_dict[client_id], batch_size=config.batch_size, shuffle=True)
-            train_c_model(client_train_loader, client_model, c_criterion, optimizer, attack_method='none', client_id=client_id,
-                          malicious_client_ids=[], optimizer_poison=None, dba_poisoning_per_batch=0.2, device=config.device)
-
-            model_updates.append(clone_model_params(client_model))
+        # get the server model state
+        server_model_sd = deepcopy(server_model.state_dict())
+        
+        # Process clients in batches to manage GPU memory usage
+        model_weights = process_clients_in_batches(
+            model_fn, server_model_sd, benign_clients, fl_data_dict, config.batch_size, 5, config
+        )
 
         # FedAvg: Aggregate model updates and update server_model_sd
         for key in server_model_sd.keys():
-            server_model_sd[key] = torch.mean(torch.stack([update[key] for update in model_updates]), dim=0)
+            stacked_tensors = [w[key].float() for w in model_weights]  # Ensure tensors are in float
+            server_model_sd[key] = torch.mean(torch.stack(stacked_tensors), dim=0)
         server_model.load_state_dict(server_model_sd)
 
         # Evaluate server model
-        test_loss, server_accuracy, _, _ = fl_validation(
-            server_model, c_criterion, test_data, server_batch_size=32, class_num=10, 
-            attack_method='none', mali_labels=[0, 7], device=config.device
-        )
+        with torch.no_grad():  # Ensure no gradients are stored during evaluation
+            test_loss, server_accuracy, _, _ = fl_validation(
+                server_model, c_criterion, test_data, server_batch_size=32, class_num=10, 
+                attack_method='none', mali_labels=[0, 7], device=config.device
+            )
         accuracy_list.append(server_accuracy)
         logging.info(f"Iteration {iter}: Server Model Accuracy = {server_accuracy:.4f}")
 
@@ -706,8 +771,6 @@ def main():
 
         # Use specified magnitudes
         magnitudes = (
-            # np.linspace(0, 0.01, 6, endpoint=False).tolist() +  # endpoint=False to exclude 0.01
-            # np.linspace(0.01, 0.1, 6, endpoint=False).tolist() +  # endpoint=False to exclude 0.1
             np.linspace(0.1, 1, 6, endpoint=False).tolist() +  # endpoint=False to exclude 1
             np.linspace(1, 20, 9, endpoint=True).tolist()
         )
@@ -717,10 +780,11 @@ def main():
         # Existing logic to identify the worst attack
         attack_accuracy_list = []
         for attacked_model in attacked_models:
-            test_loss, attack_accuracy, _, _ = fl_validation(
-                attacked_model, c_criterion, test_data, server_batch_size=32, class_num=10,
-                attack_method='none', mali_labels=[0, 7], device=config.device
-            )
+            with torch.no_grad():
+                test_loss, attack_accuracy, _, _ = fl_validation(
+                    attacked_model, c_criterion, test_data, server_batch_size=32, class_num=10,
+                    attack_method='none', mali_labels=[0, 7], device=config.device
+                )
             attack_accuracy_list.append(attack_accuracy)
 
         # Determine the attack with the worst performance
@@ -746,11 +810,10 @@ def main():
     # Visualizer.plot_accuracy(malicious_accuracy_list, output_folder, file_name="malicious_accuracy")
     Visualizer.plot_comparative_l2_norms(server_l2_distances, attack_l2_distances, server_to_initial_distances, output_folder)
     Visualizer.plot_comparative_accuracy(accuracy_list, malicious_accuracy_list, output_folder)
-    # Visualizer.plot_l2_norms(server_to_initial_distances, output_folder, file_name="server_to_initial_l2_norms")
 
     # Compute and plot cosine similarity matrix
-    cos_dist_matrix = calculate_cos_dist_matrix(g_m_directions)
-    Visualizer.plot_heatmap(cos_dist_matrix, "Cosine Distance Matrix of G_m Directions", "cosine_dist_matrix.png", output_folder)
+    cos_sim_matrix = calculate_cosine_similarity_matrix(g_m_directions)
+    Visualizer.plot_heatmap(cos_sim_matrix, "Cosine Similarity Matrix of G_m Directions", "cosine_similarity_matrix.png", output_folder)
 
     logging.info("Experiment completed successfully")
 
