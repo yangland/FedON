@@ -28,10 +28,8 @@ from utilities import (
 from models.ch_mnist import Chmnist_13L
 from models.cifar10_18l import Cifar10_18L
 from models.convnet import ConvNet, channel_dict
-from models.ddpm import *
 from models.mnist_6l import Mnist_6L
 from models.model_utils import get_model
-from models.svhn_6l import Svhn_6L
 from FedOda import FedOda
 import torch.nn as nn
 import torch.nn.functional as F

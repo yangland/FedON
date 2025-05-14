@@ -1,7 +1,6 @@
-from models.convnet import ConvNet
 from models.mnist_6l import Mnist_6L
+from models.convnet import ConvNet
 from models.cifar10_18l import Cifar10_18L 
-from models.ddpm import ContextUnet    
 from models.resnet import ResNet18
 from models.vgg import VGG13, VGG16, VGG11
 from models.efficientnet import EfficientNetB0
@@ -14,7 +13,6 @@ def get_model(model):
         "ConvNet": ConvNet, # good
         "Mnist_6L": Mnist_6L,
         "Cifar10_18L": Cifar10_18L,
-        "ContextUnet": ContextUnet, 
         "ResNet18": ResNet18, # good
         "VGG13": VGG13,
         "VGG11": VGG11,

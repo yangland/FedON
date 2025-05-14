@@ -49,15 +49,15 @@ def setup_output_directory(dataset, model_name, dir_path='experiments'):
 # Configuration class to hold all parameters
 class Config:
     def __init__(self):
-        self.iters = 50
+        self.iters = 25
         self.learning_rate = 0.01 # 0.001 for smaller datasets
         self.attack = "untargeted"
-        self.model_name = "VGG13" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
+        self.model_name = "ConvNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
         self.num_classes = 10
-        self.mali_client_num = 10
-        self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
-        self.device = "cuda:2" if torch.cuda.is_available() else "cpu"
-        self.client_num = 100
+        self.mali_client_num = 2
+        self.dataset = "fmnist"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.client_num = 10
         self.noniid_type = "dirichlet"
         self.dirichlet_alpha = 1.0
         self.batch_size = 32 # 32
@@ -78,6 +78,23 @@ class Visualizer:
         logging.info(f"Saved {file_name} L2 norms plot")
 
     @staticmethod
+    def plot_cos_dist(cos_distances, output_path, file_name="cos_distances"):
+        plt.figure(figsize=(8, 4))
+        plt.plot(range(1, len(cos_distances) + 1), cos_distances, color='red', marker='o')
+        plt.xlabel("Iteration")
+        plt.ylabel("Cosine Distance")
+        plt.title("Cosine Distance per Iteration")
+        plt.xticks(range(1, len(cos_distances) + 1))
+        
+        # Add horizontal line at y=1 (expected value if perfectly opposite directions)
+        plt.axhline(y=1, color='gray', linestyle='--', alpha=0.5)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(output_path, f'{file_name}.png'))
+        plt.close()
+        logging.info(f"Saved {file_name} cosine distances plot")
+
+    @staticmethod
     def plot_comparative_l2_norms(server_l2_distances, attack_l2_distances, server_to_initial_distances, output_path):
         plt.figure(figsize=(10, 5))
         
@@ -88,11 +105,11 @@ class Visualizer:
         plt.plot(range(1, len(attack_l2_distances) + 1), attack_l2_distances, color='orange', marker='x', label='Attack L2 Norms')
         
         # Plot server to initial L2 distance norms
-        plt.plot(range(1, len(server_to_initial_distances) + 1), server_to_initial_distances, color='green', marker='s', label='Server to Initial')
+        # plt.plot(range(1, len(server_to_initial_distances) + 1), server_to_initial_distances, color='green', marker='s', label='Server to Initial')
 
         plt.xlabel("Iteration")
-        plt.ylabel("L2 Norm")
-        plt.title("Comparative L2 Norms per Iteration")
+        plt.ylabel("$L_2$ Norm")
+        plt.title("Comparative $L_2$ Norms per Iteration")
         plt.xticks(range(1, len(server_l2_distances) + 1))
         plt.legend()
         plt.tight_layout()
@@ -412,6 +429,22 @@ def apply_attack_magnitude(model, G_m, average_l2_norm, magnitudes):
     return attacked_models, l2_distances
 
 
+def apply_attack_with_l2_budgets(model, G_m, l2_budgets):
+    attacked_models = []
+    l2_distances = []
+    original_params = deepcopy(flatten_model(model.state_dict()))
+
+    for l2_budget in l2_budgets:
+        logging.info(f"Applying attack with absolute L2 budget: {l2_budget}")
+        malicious_model = apply_attack_to_all_layers(model, G_m, l2_budget)
+        
+        attacked_models.append(malicious_model)
+        malicious_params = flatten_model(malicious_model.state_dict())
+        distance = torch.norm(original_params - malicious_params, p=2)
+        l2_distances.append(distance.item())
+
+    return attacked_models, l2_distances
+
 
 def apply_attack_to_specific_layer(model, G_m, l2_budget, layer_name):
     new_model = deepcopy(model)
@@ -671,6 +704,55 @@ def process_clients_in_batches(model_fn, server_model_sd, benign_clients, fl_dat
     return model_weights
 
 
+def get_dynamic_l2_budgets(previous_best_l2=None, model_update_l2_norm=None):
+    if previous_best_l2 is None and model_update_l2_norm is not None:
+        # Initial iteration - use model_update_l2_norm as reference
+        base_l2 = model_update_l2_norm
+        logger.info(f"Initial model update L2 norm with magnitude: {base_l2}")
+        return (
+            np.linspace(0.01 * base_l2, 0.1 * base_l2, 6, endpoint=False).tolist() +
+            np.linspace(0.1 * base_l2, 1 * base_l2, 6, endpoint=False).tolist() +
+            np.linspace(1 * base_l2, 20 * base_l2, 9, endpoint=True).tolist()
+        )
+    elif previous_best_l2 is not None:
+        # Subsequent iterations - use previous best L2 as reference
+        min_l2 = max(0.001, previous_best_l2 * 0.5)
+        max_l2 = previous_best_l2 * 2
+        logger.info(f"Previous best L2 norm: {previous_best_l2}")
+        
+        # Extended scaling for very large values
+        if previous_best_l2 < 0.01:
+            min_l2 = max(0.0001, min_l2)
+            max_l2 = min(0.02, max_l2)
+        elif previous_best_l2 < 0.1:
+            min_l2 = max(0.001, min_l2)
+            max_l2 = min(0.2, max_l2)
+        elif previous_best_l2 < 1:
+            min_l2 = max(0.01, min_l2)
+            max_l2 = min(2, max_l2)
+        elif previous_best_l2 < 10:
+            min_l2 = max(0.1, min_l2)
+            max_l2 = min(20, max_l2)
+        elif previous_best_l2 < 100:
+            min_l2 = max(1, min_l2)
+            max_l2 = min(200, max_l2)
+        elif previous_best_l2 < 1000:
+            min_l2 = max(10, min_l2)
+            max_l2 = min(2000, max_l2)
+        else:  # For values >= 1000
+            min_l2 = max(100, min_l2)
+            max_l2 = previous_best_l2 * 1.5
+        
+        return np.linspace(min_l2, max_l2, 10).tolist()
+    else:
+        # Fallback (shouldn't normally happen)
+        logger.info(f"Fallback: using default L2 budget range")
+        return np.linspace(0.01, 20, 15).tolist()
+
+
+# In the main loop, replace the magnitudes definition with:
+previous_best_l2 = None  # Initialize before the loop
+
 # Main experiment function
 def main():
     config = Config()
@@ -720,9 +802,12 @@ def main():
     attack_l2_distances = []  # Track L2 norm of best attack
     server_to_initial_distances = []  # Track L2 norm from initial model
     g_m_directions = []  # Track G_m directions per iteration
+    cos_distances_gm_neg_update = []  # Track cosine distances between G_m and -model_update
 
     # Previous server model state
     prev_server_state = clone_model_params(server_model)
+
+    previous_best_l2 = None  # Initialize before the loop
 
     logging.info("Starting federated training loop")
 
@@ -753,7 +838,8 @@ def main():
         # Compute L2 norm between current and previous server model
         current_server_flat = flatten_model(server_model.state_dict())
         prev_server_flat = flatten_model(prev_server_state)
-        model_update_l2_norm = torch.norm(current_server_flat - prev_server_flat).item()
+        model_update = current_server_flat - prev_server_flat
+        model_update_l2_norm = torch.norm(model_update).item()
         server_l2_distances.append(model_update_l2_norm)
 
         # Compute L2 distance from initial model
@@ -769,13 +855,36 @@ def main():
         # Flatten and store the direction of G_m for cosine similarity computation
         g_m_directions.append(flatten_update(G_m, device=config.device))
 
-        # Use specified magnitudes
-        magnitudes = (
-            np.linspace(0.1, 1, 6, endpoint=False).tolist() +  # endpoint=False to exclude 1
-            np.linspace(1, 20, 9, endpoint=True).tolist()
-        )
+        # Flatten and store the direction of G_m for cosine similarity computation
+        g_m_flat = flatten_update(G_m, device=config.device)
+        g_m_directions.append(g_m_flat)
 
-        attacked_models, l2_distances_iter = apply_attack_magnitude(malicious_model, G_m, model_update_l2_norm, magnitudes)
+        # Compute cosine similarity between G_m and -model_update
+        cos_distance = 1 - torch.nn.functional.cosine_similarity(
+            g_m_flat.unsqueeze(0), 
+            (-model_update).unsqueeze(0), 
+            dim=1
+        ).item()
+        
+        cos_distances_gm_neg_update.append(cos_distance)
+
+        # Get dynamic L2 budgets
+        l2_budgets = get_dynamic_l2_budgets(previous_best_l2, model_update_l2_norm)
+        logging.info(f"L2 budgets for iteration {iter}: {l2_budgets}")
+    
+        # magnitudes = (
+        #     np.linspace(0.01, 0.1, 6, endpoint=False).tolist() +
+        #     np.linspace(0.1, 1, 6, endpoint=False).tolist() +
+        #     np.linspace(1, 20, 9, endpoint=True).tolist()
+        # )
+        
+        #logging.info(f"Dynamic magnitudes for iteration {iter}: {magnitudes}")
+
+        # attacked_models, l2_distances_iter = apply_attack_magnitude(malicious_model, G_m, model_update_l2_norm, magnitudes)
+        
+        attacked_models, l2_distances_iter = apply_attack_with_l2_budgets(
+                                    malicious_model, G_m, l2_budgets
+                                    )
 
         # Existing logic to identify the worst attack
         attack_accuracy_list = []
@@ -795,23 +904,28 @@ def main():
         
         best_attack_model = attacked_models[max_att_index]
         best_attack_accuracy = attack_accuracy_list[max_att_index]
-        best_attack_distance = l2_distances_iter[max_att_index]
+        best_attack_l2_distance = l2_distances_iter[max_att_index]
         
         malicious_accuracy_list.append(best_attack_accuracy)
-        attack_l2_distances.append(best_attack_distance)
+        attack_l2_distances.append(best_attack_l2_distance)
 
-        logging.info(f"Iteration {iter}: Best Malicious Model Accuracy = {best_attack_accuracy:.4f}, Attack L2 Distance = {best_attack_distance:.4f}, Model Update L2 Norm = {model_update_l2_norm:.4f}")
+        logging.info(f"Iteration {iter}: Best Malicious Model Accuracy = {best_attack_accuracy:.4f}, Attack L2 Distance = {best_attack_l2_distance:.4f}, Model Update L2 Norm = {model_update_l2_norm:.4f}")
 
         # Update the previous server model state
         prev_server_state = clone_model_params(server_model)
+        
+        # Update previous_best_distance for next iteration
+        previous_best_l2 = best_attack_l2_distance
 
     # Visualizations
     # Visualizer.plot_accuracy(accuracy_list, output_folder, file_name="benign_accuracy")
     # Visualizer.plot_accuracy(malicious_accuracy_list, output_folder, file_name="malicious_accuracy")
     Visualizer.plot_comparative_l2_norms(server_l2_distances, attack_l2_distances, server_to_initial_distances, output_folder)
+    Visualizer.plot_l2_norms(server_to_initial_distances, output_path=output_folder, file_name="server_to_initial_l2_norms")
     Visualizer.plot_comparative_accuracy(accuracy_list, malicious_accuracy_list, output_folder)
 
     # Compute and plot cosine similarity matrix
+    Visualizer.plot_cos_dist(cos_distances_gm_neg_update, output_folder, file_name="cos_dist_attack_direction_vs_inverse_of_benign_model_update")
     cos_sim_matrix = calculate_cosine_similarity_matrix(g_m_directions)
     Visualizer.plot_heatmap(cos_sim_matrix, "Cosine Similarity Matrix of G_m Directions", "cosine_similarity_matrix.png", output_folder)
 
