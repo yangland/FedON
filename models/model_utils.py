@@ -14,8 +14,8 @@ def get_model(model):
         "Mnist_6L": Mnist_6L,
         "Cifar10_18L": Cifar10_18L,
         "ResNet18": ResNet18, # good
-        "VGG13": VGG13,
         "VGG11": VGG11,
+        "VGG13": VGG13,
         "VGG16": VGG16,
         "EfficientNetB0": EfficientNetB0,
         "MobileNetV2": MobileNetV2, # good

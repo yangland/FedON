@@ -93,7 +93,10 @@ def data_process(dataset, image_size, sensor_train=False, grayscal=False, percen
         ds_train = torch.utils.data.Subset(orig_set, range(n_test, n_total))  # take the rest  
     elif dataset == 'emnist-letters':
         ds_train = datasets.EMNIST('./data', split = 'letters', train=True, download=True, transform=transform)
-        ds_test = datasets.EMNIST('./data', split = 'letters', train=False, download=True, transform=transform)        
+        ds_test = datasets.EMNIST('./data', split = 'letters', train=False, download=True, transform=transform)
+    elif dataset == "Imagenette":
+        ds_train = datasets.Imagenette(root='./data', split='train', size="320px", download=False, transform=transform)
+        ds_test = datasets.Imagenette(root='./data', split='val', size="320px", download=False, transform=transform)
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)

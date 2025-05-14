@@ -49,13 +49,13 @@ def setup_output_directory(dataset, model_name, dir_path='experiments'):
 # Configuration class to hold all parameters
 class Config:
     def __init__(self):
-        self.iters = 25
+        self.iters = 40
         self.learning_rate = 0.01 # 0.001 for smaller datasets
         self.attack = "untargeted"
-        self.model_name = "ConvNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
+        self.model_name = "SqueezeNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
         self.num_classes = 10
         self.mali_client_num = 2
-        self.dataset = "fmnist"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
+        self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
         self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         self.client_num = 10
         self.noniid_type = "dirichlet"
@@ -614,7 +614,7 @@ def get_flattened_updates(model_updates, device='cpu'):
     return flattened_updates
 
 
-def calculate_cosine_similarity_matrix(vectors):
+def calculate_cos_similarity_matrix(vectors):
     num_vectors = len(vectors)
     cos_sim_matrix = np.zeros((num_vectors, num_vectors))
 
@@ -802,6 +802,7 @@ def main():
     attack_l2_distances = []  # Track L2 norm of best attack
     server_to_initial_distances = []  # Track L2 norm from initial model
     g_m_directions = []  # Track G_m directions per iteration
+    model_updates = []  # Track model updates
     cos_distances_gm_neg_update = []  # Track cosine distances between G_m and -model_update
 
     # Previous server model state
@@ -838,8 +839,9 @@ def main():
         # Compute L2 norm between current and previous server model
         current_server_flat = flatten_model(server_model.state_dict())
         prev_server_flat = flatten_model(prev_server_state)
-        model_update = current_server_flat - prev_server_flat
-        model_update_l2_norm = torch.norm(model_update).item()
+        flat_model_update = current_server_flat - prev_server_flat
+        model_updates.append(flat_model_update)
+        model_update_l2_norm = torch.norm(flat_model_update).item()
         server_l2_distances.append(model_update_l2_norm)
 
         # Compute L2 distance from initial model
@@ -853,16 +855,13 @@ def main():
         G_m, final_lr = train_one_epoch_with_negative_ce(malicious_model, malicious_train_loader, config.device)
         
         # Flatten and store the direction of G_m for cosine similarity computation
-        g_m_directions.append(flatten_update(G_m, device=config.device))
-
-        # Flatten and store the direction of G_m for cosine similarity computation
         g_m_flat = flatten_update(G_m, device=config.device)
         g_m_directions.append(g_m_flat)
 
         # Compute cosine similarity between G_m and -model_update
         cos_distance = 1 - torch.nn.functional.cosine_similarity(
             g_m_flat.unsqueeze(0), 
-            (-model_update).unsqueeze(0), 
+            (-flat_model_update).unsqueeze(0), 
             dim=1
         ).item()
         
@@ -926,8 +925,11 @@ def main():
 
     # Compute and plot cosine similarity matrix
     Visualizer.plot_cos_dist(cos_distances_gm_neg_update, output_folder, file_name="cos_dist_attack_direction_vs_inverse_of_benign_model_update")
-    cos_sim_matrix = calculate_cosine_similarity_matrix(g_m_directions)
-    Visualizer.plot_heatmap(cos_sim_matrix, "Cosine Similarity Matrix of G_m Directions", "cosine_similarity_matrix.png", output_folder)
+    g_m_cos_dist_matrix = calculate_cos_dist_matrix(g_m_directions)
+    Visualizer.plot_heatmap(g_m_cos_dist_matrix, "Cosine Dist Matrix of G_m Directions", "attack_direction_cos_dist_matrix.png", output_folder)
+
+    benign_cos_dist_matrix = calculate_cos_dist_matrix(model_updates)
+    Visualizer.plot_heatmap(benign_cos_dist_matrix, "Cosine Dist Matrix of Benign Model Update Directions", "benign_direction_cos_dist_matrix.png", output_folder)
 
     logging.info("Experiment completed successfully")
 
