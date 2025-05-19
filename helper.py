@@ -30,7 +30,6 @@ from models.cifar10_18l import Cifar10_18L
 from models.convnet import ConvNet, channel_dict
 from models.mnist_6l import Mnist_6L
 from models.model_utils import get_model
-from FedOda import FedOda
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -45,7 +44,8 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
         else:
             FedOda_class.previous_server_model = copy.deepcopy(FedOda_class.server_model)
             FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
-    
+
+        FedOda_class.current_s_m = len(set(client_selection) & set(malicious_client_ids))
     
     c_sd_before = train_c_models(client_selection, 
                                     fl_data_dict,
@@ -128,7 +128,10 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     attack_magnitude = attack_magnitude_mapping.get(attack_method, 1)
     
     if attack_method == 'FedOda':
-        FedOda_attack = FedOda_class.attack()
+        if FedOda_class is not None:
+            FedOda_attack = FedOda_class.attack()
+        else:
+            raise ValueError("FedOda_class is not initialized.")
     
     # malicous clients
     for client_id in malicious_client_ids:
@@ -310,9 +313,32 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
 
 
 def count_labels(pooled_ds):
+    """
+    Count labels in a list of datasets or a single dataset.
+
+    Args:
+        pooled_ds (Dataset or list of Datasets): The data to count labels from.
+
+    Returns:
+        dict: label -> count
+    """
     label_counter = Counter()
-    for _, label in pooled_ds:
-        label_counter[label] += 1
+
+    # If it's a list of datasets, iterate through each
+    if isinstance(pooled_ds, list):
+        for dataset in pooled_ds:
+            for _, label in dataset:
+                # Convert tensor labels to int
+                if isinstance(label, torch.Tensor):
+                    label = label.item()
+                label_counter[label] += 1
+    else:
+        # Single dataset (e.g., ConcatDataset)
+        for _, label in pooled_ds:
+            if isinstance(label, torch.Tensor):
+                label = label.item()
+            label_counter[label] += 1
+
     return dict(label_counter)
 
 

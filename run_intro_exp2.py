@@ -49,18 +49,18 @@ def setup_output_directory(dataset, model_name, dir_path='experiments'):
 # Configuration class to hold all parameters
 class Config:
     def __init__(self):
-        self.iters = 40
+        self.iters = 20
         self.learning_rate = 0.01 # 0.001 for smaller datasets
         self.attack = "untargeted"
-        self.model_name = "SqueezeNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
+        self.model_name = "VGG16" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet", "EfficientNetB0"
         self.num_classes = 10
         self.mali_client_num = 2
         self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = "cuda:2" if torch.cuda.is_available() else "cpu"
         self.client_num = 10
         self.noniid_type = "dirichlet"
         self.dirichlet_alpha = 1.0
-        self.batch_size = 32 # 32
+        self.batch_size = 16 # 32
 
 # Visualization functions
 class Visualizer:
@@ -753,7 +753,6 @@ def get_dynamic_l2_budgets(previous_best_l2=None, model_update_l2_norm=None):
 # In the main loop, replace the magnitudes definition with:
 previous_best_l2 = None  # Initialize before the loop
 
-# Main experiment function
 def main():
     config = Config()
     output_folder = setup_output_directory(config.dataset, config.model_name)
@@ -762,168 +761,151 @@ def main():
     logging.info(f"Configuration: {vars(config)}")
     
     train_data, test_data = get_dataset(config.dataset)
-
     logging.info(f"Loaded {config.dataset} dataset")
 
-    # Create FL clients
-    fl_data_dict, labels_per_client_dict, label_count_per_client_dict =\
-        create_data_fl_clients(client_num=config.client_num,
-                             noniid_type=config.noniid_type,
-                             label_skew_alpha=None,
-                             p_degree=None,
-                             dirichlet_alpha=config.dirichlet_alpha,
-                             fl_train=train_data,
-                             fl_class_num=config.num_classes)
+    fl_data_dict, labels_per_client_dict, label_count_per_client_dict = create_data_fl_clients(
+        client_num=config.client_num,
+        noniid_type=config.noniid_type,
+        label_skew_alpha=None,
+        p_degree=None,
+        dirichlet_alpha=config.dirichlet_alpha,
+        fl_train=train_data,
+        fl_class_num=config.num_classes
+    )
 
-    # Combine datasets from malicious clients to form a pooled dataset
     combined_dataset = torch.utils.data.ConcatDataset([fl_data_dict[i] for i in range(config.mali_client_num)])
     malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
-    # Get models
     model_class = get_model(config.model_name)
     model_fn = partial(model_class, num_classes=config.num_classes, dataset=config.dataset)
 
-    # Initialize server model
     server_model = model_fn().to(config.device)
-    # server_model_sd = deepcopy(server_model.state_dict())
     initial_server_flat = flatten_model(server_model.state_dict())
     c_criterion = nn.CrossEntropyLoss()
 
-    # Initialize malicious client model
     malicious_model = model_fn().to(config.device)
 
-    # Benign and malicious client setup
     benign_clients = list(range(config.mali_client_num, config.client_num))
     malicious_clients = list(range(config.mali_client_num))
 
     accuracy_list = []
     malicious_accuracy_list = []
-    server_l2_distances = []  # Track L2 norm of server model updates
-    attack_l2_distances = []  # Track L2 norm of best attack
-    server_to_initial_distances = []  # Track L2 norm from initial model
-    g_m_directions = []  # Track G_m directions per iteration
-    model_updates = []  # Track model updates
-    cos_distances_gm_neg_update = []  # Track cosine distances between G_m and -model_update
+    server_l2_distances = []
+    attack_l2_distances = []
+    server_to_initial_distances = []
+    g_m_directions = []
+    model_updates = []
+    cos_distances_gm_neg_update = []
 
-    # Previous server model state
     prev_server_state = clone_model_params(server_model)
 
-    previous_best_l2 = None  # Initialize before the loop
+    previous_best_l2 = None
 
     logging.info("Starting federated training loop")
 
     for iter in range(config.iters):
-        # get the server model state
         server_model_sd = deepcopy(server_model.state_dict())
         
-        # Process clients in batches to manage GPU memory usage
         model_weights = process_clients_in_batches(
             model_fn, server_model_sd, benign_clients, fl_data_dict, config.batch_size, 5, config
         )
 
-        # FedAvg: Aggregate model updates and update server_model_sd
         for key in server_model_sd.keys():
-            stacked_tensors = [w[key].float() for w in model_weights]  # Ensure tensors are in float
+            stacked_tensors = [w[key].float() for w in model_weights]
             server_model_sd[key] = torch.mean(torch.stack(stacked_tensors), dim=0)
+        
         server_model.load_state_dict(server_model_sd)
 
-        # Evaluate server model
-        with torch.no_grad():  # Ensure no gradients are stored during evaluation
+        with torch.no_grad():
             test_loss, server_accuracy, _, _ = fl_validation(
                 server_model, c_criterion, test_data, server_batch_size=32, class_num=10, 
                 attack_method='none', mali_labels=[0, 7], device=config.device
             )
+
         accuracy_list.append(server_accuracy)
         logging.info(f"Iteration {iter}: Server Model Accuracy = {server_accuracy:.4f}")
 
-        # Compute L2 norm between current and previous server model
         current_server_flat = flatten_model(server_model.state_dict())
         prev_server_flat = flatten_model(prev_server_state)
+
         flat_model_update = current_server_flat - prev_server_flat
         model_updates.append(flat_model_update)
+
         model_update_l2_norm = torch.norm(flat_model_update).item()
         server_l2_distances.append(model_update_l2_norm)
 
-        # Compute L2 distance from initial model
         server_to_initial_distance = torch.norm(current_server_flat - initial_server_flat).item()
         server_to_initial_distances.append(server_to_initial_distance)
 
-        # Load the server model state into the malicious model
         malicious_model.load_state_dict(server_model.state_dict())
 
-        # Malicious client updates using negative cross-entropy
         G_m, final_lr = train_one_epoch_with_negative_ce(malicious_model, malicious_train_loader, config.device)
         
-        # Flatten and store the direction of G_m for cosine similarity computation
         g_m_flat = flatten_update(G_m, device=config.device)
         g_m_directions.append(g_m_flat)
 
-        # Compute cosine similarity between G_m and -model_update
         cos_distance = 1 - torch.nn.functional.cosine_similarity(
             g_m_flat.unsqueeze(0), 
             (-flat_model_update).unsqueeze(0), 
             dim=1
         ).item()
-        
+
         cos_distances_gm_neg_update.append(cos_distance)
 
-        # Get dynamic L2 budgets
         l2_budgets = get_dynamic_l2_budgets(previous_best_l2, model_update_l2_norm)
         logging.info(f"L2 budgets for iteration {iter}: {l2_budgets}")
-    
-        # magnitudes = (
-        #     np.linspace(0.01, 0.1, 6, endpoint=False).tolist() +
-        #     np.linspace(0.1, 1, 6, endpoint=False).tolist() +
-        #     np.linspace(1, 20, 9, endpoint=True).tolist()
-        # )
-        
-        #logging.info(f"Dynamic magnitudes for iteration {iter}: {magnitudes}")
 
-        # attacked_models, l2_distances_iter = apply_attack_magnitude(malicious_model, G_m, model_update_l2_norm, magnitudes)
-        
-        attacked_models, l2_distances_iter = apply_attack_with_l2_budgets(
-                                    malicious_model, G_m, l2_budgets
-                                    )
+        try:
+            attacked_models, l2_distances_iter = apply_attack_with_l2_budgets(
+                malicious_model, G_m, l2_budgets
+            )
 
-        # Existing logic to identify the worst attack
-        attack_accuracy_list = []
-        for attacked_model in attacked_models:
-            with torch.no_grad():
-                test_loss, attack_accuracy, _, _ = fl_validation(
-                    attacked_model, c_criterion, test_data, server_batch_size=32, class_num=10,
-                    attack_method='none', mali_labels=[0, 7], device=config.device
-                )
-            attack_accuracy_list.append(attack_accuracy)
+            attack_accuracy_list = []
+            for attacked_model in attacked_models:
+                with torch.no_grad():
+                    test_loss, attack_accuracy, _, _ = fl_validation(
+                        attacked_model, c_criterion, test_data, server_batch_size=32, class_num=10,
+                        attack_method='none', mali_labels=[0, 7], device=config.device
+                    )
+                attack_accuracy_list.append(attack_accuracy)
 
-        # Determine the attack with the worst performance
-        max_att_index = next(
-            (i for i, acc in enumerate(attack_accuracy_list) if acc <= 0.1),  # Adjust threshold as needed
-            min(enumerate(attack_accuracy_list), key=lambda x: x[1])[0]
-        )
-        
-        best_attack_model = attacked_models[max_att_index]
-        best_attack_accuracy = attack_accuracy_list[max_att_index]
-        best_attack_l2_distance = l2_distances_iter[max_att_index]
-        
-        malicious_accuracy_list.append(best_attack_accuracy)
-        attack_l2_distances.append(best_attack_l2_distance)
+            max_att_index = next(
+                (i for i, acc in enumerate(attack_accuracy_list) if acc <= 0.1),
+                min(enumerate(attack_accuracy_list), key=lambda x: x[1])[0]
+            )
 
-        logging.info(f"Iteration {iter}: Best Malicious Model Accuracy = {best_attack_accuracy:.4f}, Attack L2 Distance = {best_attack_l2_distance:.4f}, Model Update L2 Norm = {model_update_l2_norm:.4f}")
+            best_attack_model = attacked_models[max_att_index]
+            best_attack_accuracy = attack_accuracy_list[max_att_index]
+            best_attack_l2_distance = l2_distances_iter[max_att_index]
 
-        # Update the previous server model state
+            malicious_accuracy_list.append(best_attack_accuracy)
+            attack_l2_distances.append(best_attack_l2_distance)
+
+            logging.info(f"Iteration {iter}: Best Malicious Model Accuracy = {best_attack_accuracy:.4f}, Attack L2 Distance = {best_attack_l2_distance:.4f}, Model Update L2 Norm = {model_update_l2_norm:.4f}")
+
+            previous_best_l2 = best_attack_l2_distance
+
+        except RuntimeError as e:
+            if "CUDA out of memory" in str(e):
+                logging.error("CUDA out of memory, skipping attack application for this iteration.")
+                torch.cuda.empty_cache()
+                gc.collect()
+            else:
+                raise e
+
         prev_server_state = clone_model_params(server_model)
-        
-        # Update previous_best_distance for next iteration
-        previous_best_l2 = best_attack_l2_distance
 
-    # Visualizations
-    # Visualizer.plot_accuracy(accuracy_list, output_folder, file_name="benign_accuracy")
-    # Visualizer.plot_accuracy(malicious_accuracy_list, output_folder, file_name="malicious_accuracy")
+        # Safely delete variables if they exist
+        for var_name in ['server_model_sd', 'model_weights', 'attacked_models']:
+            if var_name in locals():
+                del locals()[var_name]
+        torch.cuda.empty_cache()
+        gc.collect()
+
     Visualizer.plot_comparative_l2_norms(server_l2_distances, attack_l2_distances, server_to_initial_distances, output_folder)
     Visualizer.plot_l2_norms(server_to_initial_distances, output_path=output_folder, file_name="server_to_initial_l2_norms")
     Visualizer.plot_comparative_accuracy(accuracy_list, malicious_accuracy_list, output_folder)
 
-    # Compute and plot cosine similarity matrix
     Visualizer.plot_cos_dist(cos_distances_gm_neg_update, output_folder, file_name="cos_dist_attack_direction_vs_inverse_of_benign_model_update")
     g_m_cos_dist_matrix = calculate_cos_dist_matrix(g_m_directions)
     Visualizer.plot_heatmap(g_m_cos_dist_matrix, "Cosine Dist Matrix of G_m Directions", "attack_direction_cos_dist_matrix.png", output_folder)

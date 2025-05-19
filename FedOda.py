@@ -1,417 +1,316 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
+import torch.nn.functional as F
 from copy import deepcopy
-import numpy as np
-from torch.utils.data import DataLoader
-import matplotlib.pyplot as plt
-import networkx as nx
-import os
-import random
-from run_intro_exp import (
-    get_dataset,
-    train_one_epoch_with_negative_ce,
-    apply_attack_to_all_layers,
-    calculate_distance_matrix,
-    flatten_model,
-    clone_model_params
-)
+import math
+import logging
+
 
 class FedOda:
-    def __init__(self, model_fn, device, learning_rate=0.01, scaling_factor=8, reduce_factor=0.5, increase_factor=1.1):
-        # Model-related variables
+    def __init__(self, model_fn, device, pooled_loader, total_clients_num, 
+                 malicious_clients_num, E=5, learning_rate=0.01, scaling_factor=8,
+                 reduce_factor=0.8, increase_factor=1.1, threshold=0.7, logger=None):
         self.model_fn = model_fn
         self.device = device
+        self.E = E # Number of rounds to consider for history
         self.learning_rate = learning_rate
         self.reduce_factor = reduce_factor
         self.increase_factor = increase_factor
+        self.threshold = threshold
+        self.pooled_loader = pooled_loader
+        self.total_clients_num = total_clients_num
+        self.malicious_clients_num = malicious_clients_num
+        self.current_s_m = None
         
-        # State variables to be saved
-        self.model0_sd = None      # Initial model state dict
-        self.modelt_sd = None      # Pretrained model state dict
-        self.att_direction = None            # Attack direction
-        self.last_update_norm = 0  # Last update norm during pretraining
-        self.benign_direction = None  # Benign direction
-        self.scaling_factor = scaling_factor # Current scaling factor
-        
-        self.server_model = None  # Server model
+        # State variables
+        self.model0_sd = None
+        self.modelt_sd = None
+        self.att_direction = None
+        self.last_update_norm = 0
+        self.benign_direction = None
+        self.scaling_factor = scaling_factor
+        self.epsilon = None
+        self.server_model = None
         self.previous_server_model = None
-
-        self.q_table = {}  # Q-table for RL
-        self.action_space = [-1, 0, 1]  # Actions: decrease, maintain, increase
-        self.state = None
-        
-    def pretrain(self, iters, pooled_data, test_data):
-        """
-        Pretrain the model and initialize attack parameters
-        """
-        # Step 1: Initialize models
-        model0 = self.model_fn().to(self.device)
-        self.model0_sd = deepcopy(model0.state_dict())
-
-        # Train model to convergence
-        optimizer_t = optim.SGD(model0.parameters(), lr=self.learning_rate)
-        criterion = nn.CrossEntropyLoss()
-
-        # Initialize variables for tracking updates
-        prev_params = None
-        update_norms = []  # List to store all update norms
-        pooled_data_loader = DataLoader(pooled_data, batch_size=32, shuffle=True, num_workers=0)
-        vali_accuracies = []
-        
-        for iteration in range(iters):
-            for inputs, labels in pooled_data_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
-                optimizer_t.zero_grad()
-                outputs = model0(inputs)
-                loss = criterion(outputs, labels)
-                loss.backward()
-                optimizer_t.step()
-
-            # validate the model on the validation set
-            test_loss, accuracy, per_class_accuracy = \
-                model_validation(model=model0, 
-                                 criterion=criterion, 
-                                 test_data=test_data, 
-                                 device=self.device, 
-                                 class_num=10)
-            vali_accuracies.append(accuracy)
-            print(f"Iteration {iteration+1}/{iters}, Validation Accuracy: {accuracy:.4f}")
-            
-            # After the iteration, compute update norm if not first iteration
-            if iteration > 0:
-                update_norm = 0.0
-                for name, param in model0.named_parameters():
-                    update_norm += torch.norm(param.data - prev_params[name].data, p=2).item() ** 2
-                update_norm = update_norm ** 0.5  # sqrt to get L2 norm
-                update_norms.append(update_norm)
                 
-            # Update previous parameters for next iteration
-            prev_params = {k: v.clone() for k, v in model0.named_parameters()}
-        
-        # saved the benign model as modelt
-        self.modelt_sd = deepcopy(model0.state_dict())
-        print(f"Final Validation Accuracy: {vali_accuracies[-1]:.4f}")
+        # Logging
+        self.logger = logger or logging.getLogger("FedOda")
 
-        # Step 2: Determine attack direction using negative cross entropy
-        self.att_direction, _ = train_one_epoch_with_negative_ce(model0, pooled_data_loader, device=self.device)
-        self.benign_direction = {
-                                name: self.modelt_sd[name] - self.model0_sd[name] 
-                                for name in self.modelt_sd
-                                }
+        # Historical memory
+        self.history_server_updates = []
+        self.history_pred_benign_updates = []
+        self.history_pred_server_updates = []
+        self.history_s_m = []
 
-        att_norm = get_l2_norm(self.att_direction)
-        benign_norm = get_l2_norm(self.benign_direction)
+    def get_attack_direction(self, model, train_loader):
+        model.train()
+        loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
+        grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
 
-        print(f"L2 norm of att_direction: {att_norm:.3f}")
-        print(f"L2 norm of benign_direction: {benign_norm:.3f}")
-        
-        # Get the last update norm (or 0 if no updates were made)
-        self.last_update_norm = update_norms[-1] if update_norms else 0.0
+        model.zero_grad()
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
+            outputs = model(inputs)
+            loss = loss_fn(outputs, labels)
+            loss.backward()
+            break  # One batch is sufficient for direction
 
-        max_attack_l2_dist, max_attack_acc, attack_accuracy_list, l2_distances = self.find_minmax_l2(test_data)
-        modelt_acc = attack_accuracy_list[0]
+        grad_flattened = []
+        for name, param in model.named_parameters():
+            g = param.grad.detach().clone()
+            grads[name] = g
+            grad_flattened.append(g.view(-1))
 
-        return max_attack_l2_dist, max_attack_acc, attack_accuracy_list, l2_distances, modelt_acc
+        g_m_vec = torch.cat(grad_flattened)
+        g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
+        self.att_direction = g_m_unit
+        return grads, g_m_unit
+
+    def compute_predicted_benign_update(self, model_t, model_t_minus_1, train_loader):
+        model = deepcopy(model_t).to(self.device)
+        model.eval()
+        model.zero_grad()
+
+        ce_loss = torch.nn.CrossEntropyLoss()
+        for inputs, labels in train_loader:
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
+            outputs = model(inputs)
+            loss = ce_loss(outputs, labels)
+            loss.backward()
+            break  # One batch
+
+        grad_flattened = []
+        for param in model.parameters():
+            grad_flattened.append(param.grad.view(-1))
+        grad_vector = torch.cat(grad_flattened)
+
+        update_norm = torch.norm(flatten_model(model_t.state_dict()) - flatten_model(model_t_minus_1.state_dict()))
+        benign_direction = grad_vector / (grad_vector.norm() + 1e-10)
+        benign_update = update_norm * benign_direction
+        return benign_update
+
+    def estimate_benign_clients(self, total_clients_num, malicious_clients_num, current_s_m):
+        """
+        Estimate the number of benign clients selected in the current round.
+
+        Args:
+            total_clients (int): Total number of clients (p).
+            malicious_clients (int): Number of malicious clients (q).
+            current_s_m (int): Number of malicious clients selected in the current round.
+
+        Returns:
+            s_b (float): Estimated number of benign clients selected.
+            s_hat (float): Estimated total number of selected clients per round.
+        """
+        history_len = len(self.history_s_m)
+        if history_len == 0:
+            # Fallback: assume uniform selection
+            avg_s_m = current_s_m
+        else:
+            avg_s_m = sum(self.history_s_m) / history_len
+
+        s_hat = (total_clients_num / malicious_clients_num) * avg_s_m
+        s_b = s_hat - current_s_m
+        return s_b, s_hat
+
+    def estimate_server_update(self, s_b, s_m, benign_update, malicious_update):
+        total = s_b + s_m
+        return (s_b / total) * benign_update + (s_m / total) * malicious_update
+
+    def update_history(self, observed_server_update, predicted_benign, predicted_server, s_m):
+        self.history_server_updates.append(observed_server_update)
+        self.history_pred_benign_updates.append(predicted_benign)
+        self.history_pred_server_updates.append(predicted_server)
+        self.history_s_m.append(s_m) # selection number of malicious clients in each iteration 
+
+        if len(self.history_server_updates) > self.E:
+            self.history_server_updates.pop(0)
+            self.history_pred_benign_updates.pop(0)
+            self.history_pred_server_updates.pop(0)
+            self.history_s_m.pop(0)
 
 
-    def find_minmax_l2(self, test_data):
-        magnitudes = (
-            np.linspace(0, 0.01, 6, endpoint=True).tolist() +
-            np.linspace(0.01, 0.1, 6, endpoint=True).tolist() +
-            np.linspace(0.1 + 1e-6, 1, 6, endpoint=True).tolist() +
-            np.linspace(1, 20, 20, endpoint=True).tolist()
+    def bayesian_inference(self, d):
+        E = len(self.history_server_updates)
+
+        if E == 0:
+            self.logger.warning("[FedOda] No history for Bayesian inference. Returning neutral posterior.")
+            return 0.5
+
+        # Compute empirical variance between server deltas and predicted benign deltas
+        sigma2_numerator = sum(
+            (self.history_server_updates[i] - self.history_pred_benign_updates[i]).norm()**2
+            for i in range(E)
         )
-        
-        modelt = self.model_fn().to(self.device)
-        modelt.load_state_dict(self.modelt_sd)
-        c_criterion_t = nn.CrossEntropyLoss()
-        attacked_models, l2_distances = self.apply_attack_magnitude(modelt, 
-                                                               self.att_direction, 
-                                                               self.last_update_norm,
-                                                               magnitudes)
-    
-        attack_accuracy_list = []
-        for i, attacked_model in enumerate(attacked_models):
-            # test_loss, accuracy, per_class_accuracy, attack_success_rate = fl_validation(
-            #     attacked_model, c_criterion_t, pooled_data, server_batch_size=32, class_num=10,
-            #     attack_method='none', mali_labels=[0,7], device=self.device
-            # )
-            test_loss, accuracy, per_class_accuracy = \
-                model_validation(model=attacked_model, 
-                                 criterion=c_criterion_t, 
-                                 test_data=test_data, 
-                                 device=self.device, 
-                                 class_num=10)
-                
-            attack_accuracy_list.append(accuracy*100)
+        sigma2 = sigma2_numerator / (d * E + 1e-10)
 
-        max_att_index = next(
-            (i for i, acc in enumerate(attack_accuracy_list) if acc <= 10),
-            min(enumerate(attack_accuracy_list), key=lambda x: x[1])[0]
+        self.logger.info(f"[FedOda] Bayesian inference: history length E = {E}")
+        self.logger.info(f"[FedOda] sigma² = {sigma2:.6f}")
+
+        log_likelihoods = []
+
+        for i in range(E):
+            delta_s = self.history_server_updates[i]
+            delta_b = self.history_pred_benign_updates[i]
+            delta_s_pred = self.history_pred_server_updates[i]
+
+            d1 = (delta_s - delta_b).norm()**2
+            d2 = (delta_s - delta_s_pred).norm()**2
+            l = (d1 - d2) / (2 * sigma2 + 1e-10)
+
+            self.logger.info(
+                f"[FedOda] Iter {i}: "
+                f"||Δs - Δb||² = {d1:.6f}, "
+                f"||Δs - Δs_pred||² = {d2:.6f}, "
+                f"log-likelihood diff = {l:.6f}"
+            )
+
+            log_likelihoods.append(l)
+
+        total_ll = sum(log_likelihoods)
+        posterior = 1 / (1 + math.exp(-total_ll))
+
+        self.logger.info(f"[FedOda] Bayesian total log-likelihood = {total_ll:.6f}")
+        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
+
+        return posterior
+
+    def adjust_epsilon(self, epsilon, posterior):
+        if posterior < self.threshold:
+            return epsilon * self.reduce_factor
+        else:
+            return epsilon
+        
+    def attack(self):
+        if self.server_model is None:
+            self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
+            return None, None
+
+        # 🔁 First Iteration: No history
+        if self.previous_server_model is None:
+            self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
+
+            for x, y in self.pooled_loader:
+                print(f"x shape: {x.shape}, y: {y}")
+                break
+
+            # Step 1: Compute attack direction (g_m)
+            g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+
+            # Step 2: Simulate benign update from one malicious client
+            benign_update_vec, benign_norm = self.simulate_benign_update(self.pooled_loader, max_batches=10)
+            self.epsilon = self.scaling_factor * benign_norm
+            self.logger.info(f"[FedOda] Simulated benign norm = {benign_norm:.4f}, ε = {self.epsilon:.4f}")
+
+            # Step 3: Apply attack
+            malicious_update = self.epsilon * g_m_vec
+
+            # Step 4: Convert vector to dict
+            malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+            self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
+            return malicious_update_dict, malicious_update
+
+        # 🔁 Regular FedOda Attack
+        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
+        print(f"self.epsilon: {self.epsilon}")
+        
+        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+        malicious_update = self.epsilon * g_m_vec
+
+        self.logger.info("[FedOda] Step 2: Predicting benign update direction")
+        benign_update = self.compute_predicted_benign_update(self.server_model, self.previous_server_model, self.pooled_loader)
+
+        self.logger.info("[FedOda] Step 3: Estimating benign client count (s_b)")
+        s_b, s_hat = self.estimate_benign_clients(
+            total_clients_num=self.total_clients_num,
+            malicious_clients_num=self.malicious_clients_num,
+            current_s_m=self.current_s_m
         )
-        max_attack_l2_dist = l2_distances[max_att_index]
-        
-        return max_attack_l2_dist, attack_accuracy_list[max_att_index], attack_accuracy_list, l2_distances
-    
-    
-    def apply_attack_magnitude(self, model, att_direction, average_l2_norm, magnitudes):
-        attacked_models = []
-        l2_distances = []
-        original_params = deepcopy(flatten_model(model.state_dict()))
+        self.logger.info(f"[FedOda] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}")
 
-        for magnitude in magnitudes:
-            l2_budget = magnitude * average_l2_norm
-            print(f"Applying attack with L2 budget: {l2_budget}")
+        self.logger.info("[FedOda] Step 4: Estimating server update assuming malicious inclusion")
+        delta_s_pred = self.estimate_server_update(s_b, self.current_s_m, benign_update, malicious_update)
 
-            malicious_model = apply_attack_to_all_layers(model, att_direction, l2_budget)
+        self.logger.info("[FedOda] Step 5: Observing actual server update")
+        delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
 
-            attacked_models.append(malicious_model)
-            malicious_params = flatten_model(malicious_model.state_dict())
-            distance = torch.norm(original_params - malicious_params, p=2)
-            l2_distances.append(distance.item())
+        self.logger.info("[FedOda] Step 6: Updating history")
+        self.update_history(delta_s, benign_update, delta_s_pred, self.current_s_m)
 
-        return attacked_models, l2_distances
-    
-    """
-    def attack(self):
-        device = self.device  # convenience
+        self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
+        posterior = self.bayesian_inference(d=len(malicious_update))
+        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
-        # Step 1: Measure progress
-        if self.previous_server_model is not None:
-            server_update = flatten_model(clone_model_params(self.server_model)).to(device) - \
-                            flatten_model(clone_model_params(self.previous_server_model)).to(device)
+        self.logger.info("[FedOda] Step 8: Adjusting scaling factor (epsilon)")
+        prev_epsilon = self.epsilon
+        print("prev_epsilon", prev_epsilon)
+        self.epsilon = self.adjust_epsilon(prev_epsilon, posterior)
+        self.logger.info(f"[FedOda] Epsilon L2 adjusted: {prev_epsilon:.4f} -> {self.epsilon:.4f}")
 
-            server_update_norm = torch.norm(server_update).to(device)
+        self.logger.info("[FedOda] Step 9: Creating malicious update dict")
+        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
 
-            flat_att_direction = flatten_model(self.att_direction).to(device)
-            flat_benign_direction = flatten_model(self.benign_direction).to(device)
+        self.logger.info("[FedOda] Attack completed, returning malicious update.")
+        return malicious_update_dict, malicious_update
 
-            attack_cos_sim = torch.dot(server_update, flat_att_direction) / \
-                            (torch.norm(server_update) * torch.norm(flat_att_direction))
 
-            benign_cos_sim = torch.dot(server_update, flat_benign_direction) / \
-                            (torch.norm(server_update) * torch.norm(flat_benign_direction))
-
-            if attack_cos_sim / benign_cos_sim <= torch.norm(flat_benign_direction) / torch.norm(flat_att_direction):
-                self.scaling_factor *= self.reduce_factor
-                # min scaling factor = 0.5
-                self.scaling_factor = max(self.scaling_factor, 0.5)
-
-        else:
-            server_update_norm = self.last_update_norm
-
-            flat_att_direction = flatten_model(self.att_direction).to(device)
-
-        print(f"Server update norm: {server_update_norm:.3f}")
-        print(f"self.scaling_factor: {self.scaling_factor:.3f}")
-
-        # Step 2: Craft malicious model update
-        crafted_flat_update = self.scaling_factor * server_update_norm * \
-                            (flat_att_direction / torch.norm(flat_att_direction))
-
-        # Step 3: Convert flat update to state_dict
-        crafted_update = {}
-        idx = 0
-        for name, param in self.server_model.state_dict().items():
-            numel = param.numel()
-            crafted_update[name] = crafted_flat_update[idx:idx + numel].view_as(param).clone().to(device)
-            idx += numel
-
-        # Step 4: Apply crafted update to server model
-        attacked_model = deepcopy(self.server_model)
-        with torch.no_grad():
-            for name, param in attacked_model.named_parameters():
-                param.data += crafted_update[name].to(device)
-
-        return crafted_update, attacked_model
+    def simulate_benign_update(self, loader, max_batches=1):
         """
-
-    def select_action(self, state):
-        # Epsilon-greedy policy
-        epsilon = 0.1
-        if random.uniform(0, 1) < epsilon:
-            return random.choice(self.action_space)
-        else:
-            return max(self.q_table.get(state, {}), key=lambda action: self.q_table.get(state, {}).get(action, 0), default=0)
-
-    def update_q_table(self, state, action, reward, next_state):
-        learning_rate = 0.1
-        discount_factor = 0.9
-        current_value = self.q_table.get(state, {}).get(action, 0)
-        next_max = max(self.q_table.get(next_state, {}).values(), default=0)
-        new_value = current_value + learning_rate * (reward + discount_factor * next_max - current_value)
-        if state not in self.q_table:
-            self.q_table[state] = {}
-        self.q_table[state][action] = new_value
-
-    def attack(self):
-        """
-        Perform the attack on the server model
-        """
-        device = self.device  # convenience
-
-        # Step 1: Measure progress
-        if self.previous_server_model is not None:
-            server_update = flatten_model(clone_model_params(self.server_model)).to(device) - \
-                            flatten_model(clone_model_params(self.previous_server_model)).to(device)
-
-            server_update_norm = torch.norm(server_update).to(device)
-
-            flat_att_direction = flatten_model(self.att_direction).to(device)
-
-            # Calculate the projection of the server update onto the attack direction
-            projection_on_att_direction = torch.dot(server_update, flat_att_direction) / torch.norm(flat_att_direction)
-
-            # Use the projection as the reward
-            reward = projection_on_att_direction.item()
-
-            # Determine the action based on the current state
-            self.state = (server_update_norm.item(), self.scaling_factor)
-            action = self.select_action(self.state)
-            self.scaling_factor += action
-
-            # Ensure scaling factor remains within certain bounds
-            self.scaling_factor = max(0.5, min(self.scaling_factor, 10))
-
-            # Update Q-table
-            next_state = (server_update_norm.item(), self.scaling_factor)
-            self.update_q_table(self.state, action, reward, next_state)
-
-        else:
-            # If no previous server model, set default values
-            server_update_norm = self.last_update_norm
-            flat_att_direction = flatten_model(self.att_direction).to(device)
-            self.state = (server_update_norm, self.scaling_factor)
-
-        print(f"Server update norm: {server_update_norm:.3f}")
-        print(f"self.scaling_factor: {self.scaling_factor:.3f}")
-
-        # Step 2: Craft malicious model update
-        crafted_flat_update = self.scaling_factor * server_update_norm * \
-                            (flat_att_direction / torch.norm(flat_att_direction))
-
-        # Step 3: Convert flat update to state_dict
-        crafted_update = {}
-        idx = 0
-        for name, param in self.server_model.state_dict().items():
-            numel = param.numel()
-            crafted_update[name] = crafted_flat_update[idx:idx + numel].view_as(param).clone().to(device)
-            idx += numel
-
-        # Step 4: Apply crafted update to server model
-        attacked_model = deepcopy(self.server_model)
-        with torch.no_grad():
-            for name, param in attacked_model.named_parameters():
-                param.data += crafted_update[name].to(device)
-
-        return crafted_update, attacked_model
-
-
-    def plot_distance_relationship(self, server_model, iteration, output_dir='plots'):
-        # Ensure the output directory exists
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Flatten models to compute L2 distances
-        flat_server = flatten_model(clone_model_params(server_model)).to(self.device)
-        flat_model0 = flatten_model(self.model0_sd).to(self.device)
-        flat_modelt = flatten_model(self.modelt_sd).to(self.device)
-        flat_modela = flatten_model({name: self.modelt_sd[name].cpu() + self.att_direction[name].cpu() for name in self.modelt_sd}).to(self.device)
-
-        # Calculate L2 distances
-        dist_0_t = torch.norm(flat_model0 - flat_modelt).item()
-        dist_t_a = torch.norm(flat_modelt - flat_modela).item()
-        dist_0_a = torch.norm(flat_model0 - flat_modela).item()
-        dist_s_0 = torch.norm(flat_server - flat_model0).item()
-        dist_s_t = torch.norm(flat_server - flat_modelt).item()
-        dist_s_a = torch.norm(flat_server - flat_modela).item()
-
-        # Create a graph for visualization
-        G = nx.Graph()
-        G.add_edges_from([
-            ("model0", "modelt", {'weight': dist_0_t}),
-            ("modelt", "modela", {'weight': dist_t_a}),
-            ("model0", "modela", {'weight': dist_0_a}),
-            ("server", "model0", {'weight': dist_s_0}),
-            ("server", "modelt", {'weight': dist_s_t}),
-            ("server", "modela", {'weight': dist_s_a}),
-        ])
-
-        # Position nodes using a spring layout
-        pos = nx.spring_layout(G, seed=42)
-
-        # Draw the graph
-        nx.draw(G, pos, with_labels=True, node_size=700, node_color='lightblue', font_size=10, font_weight='bold')
-        edge_labels = nx.get_edge_attributes(G, 'weight')
-        nx.draw_networkx_edge_labels(G, pos, edge_labels={(u, v): f"{w:.2f}" for u, v, w in G.edges(data='weight')})
-
-        plt.title("Distance Relationship of Server Model and Pretrained Models")
+        Simulate benign training to estimate the update norm for one client.
         
-        # Save the plot to disk
-        plot_filename = os.path.join(output_dir, f"distance_relationship_iter_{iteration}.png")
-        plt.savefig(plot_filename)
-        plt.close()
-        print(f"Plot saved to {plot_filename}")
-
-
-def model_validation(model, criterion, test_data, device, class_num):
-    """
-    Validate the model on the given data loader
-    """
-    # Evaluate on original test loader for accuracy
-    test_loader = DataLoader(test_data, batch_size=32, shuffle=False, num_workers=0)
-    # Set up containers
-    model.eval()
-    correct_pred = {class_id: 0 for class_id in range(class_num)}
-    total_pred = {class_id: 0 for class_id in range(class_num)}
-    per_class_accuracy = {}
+        Args:
+            loader: DataLoader containing malicious client data.
+            max_batches: Number of batches to simulate (usually 1 for speed).
         
-    correct = 0
-    test_loss = 0.0
-    with torch.no_grad():
-        for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
-            output = model(data)
-            test_loss += criterion(output, target).item()
-            prediction = output.argmax(dim=1, keepdim=True)
-            correct += prediction.eq(target.view_as(prediction)).sum().item()
-            prediction = prediction.flatten()
-            target = target.flatten()
-            for class_id, pred in zip(target, prediction):
-                total_pred[int(class_id)] += 1
-                if class_id == pred:
-                    correct_pred[int(class_id)] += 1
-    test_loss /= len(test_loader)
-    accuracy = correct / len(test_loader.dataset)
-    for class_id in range(class_num):
-        if total_pred[class_id] != 0:
-            per_class_accuracy[class_id] = correct_pred[class_id] / total_pred[class_id]
-        else:
-            per_class_accuracy[class_id] = -1
+        Returns:
+            update_vector: Flattened parameter update vector.
+            update_norm: L2 norm of the update vector.
+        """
+        model_before = deepcopy(self.server_model)
+        model_after = deepcopy(self.server_model).to(self.device)
+        model_after.train()
+        optimizer = torch.optim.SGD(model_after.parameters(), lr=self.learning_rate)
 
-    return test_loss, accuracy, per_class_accuracy
+        batch_count = 0
+        for inputs, labels in loader:
+            inputs, labels = inputs.to(self.device), labels.to(self.device)
+            optimizer.zero_grad()
+            outputs = model_after(inputs)
+            loss = F.cross_entropy(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            batch_count += 1
+            if batch_count >= max_batches:
+                break
+
+        # Compute flattened update vector
+        before = flatten_model(model_before.state_dict())
+        after = flatten_model(model_after.state_dict())
+        update = after - before
+        norm = update.norm()
+
+        return update, norm
 
 
-def get_l2_norm(tensor_dict):
-    return torch.sqrt(sum((v**2).sum() for v in tensor_dict.values())).item()
+# Utility
+def flatten_model(state_dict):
+    return torch.cat([param.view(-1).float() for param in state_dict.values()])
 
-"""
-# Example usage
-config = Config()
-train_data, _ = get_dataset(config.dataset)
-pooled_data_loader = DataLoader(train_data, batch_size=config.batch_size, shuffle=True, num_workers=0)
+def vector_to_state_dict(vector, reference_model):
+    """
+    Convert a flattened vector into a state_dict that matches the structure of reference_model.
 
-# Pretraining to get attack direction
-model_fn = partial(get_model(config.model_name), num_classes=config.num_classes, dataset=config.dataset)
-initial_weights, attack_direction, last_update_norm = FedOda_pretrain(config, pooled_data_loader, model_fn, config.device)
+    Args:
+        vector (torch.Tensor): Flattened model update vector.
+        reference_model (torch.nn.Module): A model whose parameter shapes are used for reconstruction.
 
-# Simulate FL process
-server_model = model_fn().to(config.device)
-previous_server_model = model_fn().to(config.device)
-server_model.load_state_dict(initial_weights)
-previous_server_model.load_state_dict(initial_weights)
-
-# Craft malicious update
-crafted_model = FedOda(server_model, previous_server_model, attack_direction, 
-                       flatten_model(attack_direction), 2.0, config.device)
-"""
+    Returns:
+        state_dict (dict): A dictionary of parameter tensors shaped like reference_model.
+    """
+    state_dict = {}
+    idx = 0
+    for name, param in reference_model.named_parameters():
+        numel = param.numel()
+        state_dict[name] = vector[idx: idx + numel].view_as(param).clone().detach()
+        idx += numel
+    return state_dict

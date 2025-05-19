@@ -27,7 +27,7 @@ from aggr.fedavg_median import coordinate_wise_median, fedavg, trimmed_mean
 from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
-from FedOda import *
+from FedOda import FedOda
 
 logger = logging.getLogger("individual_logging")
 
@@ -35,7 +35,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     client_num = params['n']
     malicious_num = params['m']
     global device
-    device  = params['cuda_device']
+    device  = torch.device(f"cuda:{params['cuda_device']}")
     noniid_type = params['noniid_type']
     
     global label_skew_alpha
@@ -167,32 +167,44 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
     if attack_method == 'FedOda':
         # create the pooled dataset for FedOda
-        pooled_ds = []
+        pooled_data = []
         for client_id, client_data in fl_data_dict.items():
             if client_id in malicious_client_ids:
-                pooled_ds+=client_data
+                pooled_data.append(client_data)
         
-        label_distribution = count_labels(pooled_ds)
+        label_distribution = count_labels(pooled_data)
         logger.info(f"pooled dataset label distribution: {label_distribution}")
         
         # pretrain the model to get attack direction
         model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])
-        FedOda_ = FedOda(model_fn=model_fn, 
-                         device=device, 
-                         learning_rate=0.001, 
-                         scaling_factor=8,
-                         reduce_factor=0.8,
-                         increase_factor=1.05)
+        # FedOda_ = FedOda(model_fn=model_fn, 
+        #                  device=device, 
+        #                  learning_rate=0.001, 
+        #                  scaling_factor=8,
+        #                  reduce_factor=0.8,
+        #                  increase_factor=1.05)
+        # logger.info(f"max_attack_l2_dist: {max_attack_l2_dist:.3f}, max_attack_acc: {max_attack_acc:.3f}")
+        # logger.info(f"attack_accuracy_list: {[round(x, 3) for x in attack_accuracy_list]}")
+        # logger.info(f"l2_distances: {[round(x, 3) for x in l2_distances]}")
+        # logger.info(f"modelt_acc: {modelt_acc}")       
         
-        max_attack_l2_dist, max_attack_acc, attack_accuracy_list, l2_distances, modelt_acc = \
-            FedOda_.pretrain(iters=20, pooled_data=pooled_ds, test_data=fl_test)
+        pooled_dataset = ConcatDataset(pooled_data)
+        pooled_loader = DataLoader(pooled_dataset, batch_size=client_batch_size*2, shuffle=True)
         
-        logger.info(f"max_attack_l2_dist: {max_attack_l2_dist:.3f}, max_attack_acc: {max_attack_acc:.3f}")
-        logger.info(f"attack_accuracy_list: {[round(x, 3) for x in attack_accuracy_list]}")
-        logger.info(f"l2_distances: {[round(x, 3) for x in l2_distances]}")
-        logger.info(f"modelt_acc: {modelt_acc}")
+        foda = FedOda(model_fn=model_fn, 
+                      device=device,
+                      pooled_loader=pooled_loader,
+                      total_clients_num=client_num,
+                      malicious_clients_num=len(malicious_client_ids),
+                      E=10,
+                      learning_rate=0.01,
+                      scaling_factor=8,
+                      reduce_factor=0.8,
+                      increase_factor=1.1,
+                      threshold=0.7,
+                      logger=logger)
     else:
-        FedOda_ = None
+        foda = None
         
     loss_acc_csv_header = ["iter", "loss", "accuracy"]
     loss_acc_csv = CsvLogging(f"{timestamp}_loss_acc", exp_dir, loss_acc_csv_header)
@@ -249,11 +261,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
                                    client_batch_size, dba_poisoning_per_batch, 
-                                   FedOda_class = FedOda_, device=device)
+                                   FedOda_class = foda, device=device)
 
-        if attack_method == 'FedOda':
-            server_model = mco_dict[-1]["c_model"]
-            FedOda_.plot_distance_relationship(server_model, iter, output_dir=f'{exp_dir}/plots')
+        # if attack_method == 'FedOda':
+        #     server_model = mco_dict[-1]["c_model"]
+        #     foda.plot_distance_relationship(server_model, iter, output_dir=f'{exp_dir}/plots')
 
         server_iter = 0
         fid_avg = 0
