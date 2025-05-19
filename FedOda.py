@@ -128,26 +128,23 @@ class FedOda:
             self.history_pred_server_updates.pop(0)
             self.history_s_m.pop(0)
 
-
     def bayesian_inference(self, d):
         E = len(self.history_server_updates)
 
         if E == 0:
-            self.logger.warning("[FedOda] No history for Bayesian inference. Returning neutral posterior.")
+            self.logger.warning("[FedOda] No history found for Bayesian inference. Returning neutral posterior.")
             return 0.5
 
-        # Compute empirical variance between server deltas and predicted benign deltas
-        sigma2_numerator = sum(
+        # Compute sigma² (empirical variance)
+        sigma2 = sum(
             (self.history_server_updates[i] - self.history_pred_benign_updates[i]).norm()**2
             for i in range(E)
-        )
-        sigma2 = sigma2_numerator / (d * E + 1e-10)
+        ) / (d * E + 1e-10)
 
-        self.logger.info(f"[FedOda] Bayesian inference: history length E = {E}")
-        self.logger.info(f"[FedOda] sigma² = {sigma2:.6f}")
+        self.logger.debug(f"[FedOda] Bayesian inference: history length E = {E}")
+        self.logger.debug(f"[FedOda] sigma² = {sigma2:.6f}")
 
         log_likelihoods = []
-
         for i in range(E):
             delta_s = self.history_server_updates[i]
             delta_b = self.history_pred_benign_updates[i]
@@ -157,7 +154,7 @@ class FedOda:
             d2 = (delta_s - delta_s_pred).norm()**2
             l = (d1 - d2) / (2 * sigma2 + 1e-10)
 
-            self.logger.info(
+            self.logger.debug(
                 f"[FedOda] Iter {i}: "
                 f"||Δs - Δb||² = {d1:.6f}, "
                 f"||Δs - Δs_pred||² = {d2:.6f}, "
@@ -167,18 +164,25 @@ class FedOda:
             log_likelihoods.append(l)
 
         total_ll = sum(log_likelihoods)
-        posterior = 1 / (1 + math.exp(-total_ll))
 
-        self.logger.info(f"[FedOda] Bayesian total log-likelihood = {total_ll:.6f}")
+        # 🔒 Clamp total_ll to prevent overflow in exp()
+        # math.exp(80) ~ 10^34, beyond that = overflow
+        max_exp = 80
+        clamped_ll = max(min(total_ll, max_exp), -max_exp)
+
+        # Optional: smooth with temperature to avoid saturation
+        temperature = 10.0
+        posterior = 1 / (1 + math.exp(-clamped_ll / temperature))
+
+        self.logger.info(f"[FedOda] Bayesian total log-likelihood = {total_ll:.6f} (clamped: {clamped_ll:.2f})")
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
-
         return posterior
 
     def adjust_epsilon(self, epsilon, posterior):
         if posterior < self.threshold:
             return epsilon * self.reduce_factor
         else:
-            return epsilon
+            return epsilon * self.increase_factor
         
     def attack(self):
         if self.server_model is None:

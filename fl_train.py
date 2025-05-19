@@ -199,7 +199,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                       E=10,
                       learning_rate=0.01,
                       scaling_factor=8,
-                      reduce_factor=0.8,
+                      reduce_factor=0.9,
                       increase_factor=1.1,
                       threshold=0.7,
                       logger=logger)
