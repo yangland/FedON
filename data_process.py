@@ -25,38 +25,34 @@ last_percent_reported = None
 import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
-def data_process(dataset, image_size, sensor_train=False, grayscal=False, percentage=1.0):
-    
-    isrgb = True if image_size[0] == 3 else False
+def data_process(dataset, image_size, grayscale=False, percentage=1.0):
     resize = image_size[1]
     
-    vanilla_list = [T.ToTensor()]
+    vanilla_list = [T.ToTensor()]  # Converts to [C,H,W] and scales to [0,1]
     
-    rgb_transfroms_list = vanilla_list + \
-                            [   T.Resize([resize, resize]),
-                                T.Normalize(mean=[0.0, 0.0, 0.0],
-                                            std=[1.0, 1.0, 1.0])]
-    
-    grey_transfroms_list = vanilla_list + \
-                            [   T.Resize([resize, resize]),
-                                T.Normalize(mean=[0.0],
-                                            std=[1.0]),
-                                T.Lambda(lambda x: x.repeat(3, 1, 1))]
-    
-    
-    if sensor_train:
-        if dataset in ['mnist', 'fmnist', 'omniglot', 'semeion', 'emnist', 'emnist-letters', 'kmnist']:
-            transform_list = grey_transfroms_list
-        else:
-            transform_list = rgb_transfroms_list
+    # Standard normalization values for common datasets
+    if dataset in ['mnist', 'fmnist', 'omniglot', 'semeion', 'emnist', 'emnist-letters', 'kmnist']:
+        # Grayscale datasets: mean=0.1307, std=0.3081 (MNIST/FMNIST standard)
+        transform_list = vanilla_list + [
+            T.Resize([resize, resize]),
+            T.Normalize(mean=[0.1307], std=[0.3081])  # MNIST/FMNIST stats
+        ]
     else:
-        transform_list = vanilla_list
-       
-    if grayscal:
-        transform_list += [T.Grayscale(num_output_channels=1)]
+        # RGB datasets (e.g., CIFAR10: mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616])
+        transform_list = vanilla_list + [
+            T.Resize([resize, resize]),
+            T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2470, 0.2435, 0.2616])  # CIFAR10 stats
+        ]
+    
+    # Optional: Convert RGB to grayscale (only for RGB datasets)
+    if grayscale and dataset not in ['mnist', 'fmnist', 'omniglot', 'semeion', 'emnist', 'emnist-letters', 'kmnist']:
+        transform_list = [T.Grayscale(num_output_channels=1)] + transform_list
+        # Update normalization for grayscale-converted images (use CIFAR10's global mean/std)
+        transform_list[-1] = T.Normalize(mean=[0.5], std=[0.5])  # Approximate global stats
     
     transform = T.Compose(transform_list)
     
+    # Load datasets
     if dataset == 'mnist':
         ds_train = datasets.MNIST('./data', train=True, download=True, transform=transform)
         ds_test = datasets.MNIST('./data', train=False, download=True, transform=transform)
@@ -64,7 +60,6 @@ def data_process(dataset, image_size, sensor_train=False, grayscal=False, percen
         ds_train = datasets.FashionMNIST('./data', train=True, download=True, transform=transform)
         ds_test = datasets.FashionMNIST('./data', train= False, download=True, transform=transform)    
     elif dataset == 'cifar10':
-        transform = T.Compose(rgb_transfroms_list)
         ds_train = datasets.CIFAR10('./data', train=True, download=True, transform=transform)
         ds_test = datasets.CIFAR10('./data', train= False, download=True, transform=transform)
     elif dataset == 'cifar100':
@@ -136,7 +131,6 @@ def data_process(dataset, image_size, sensor_train=False, grayscal=False, percen
         ds_test = to_torch_ds(ds_train, transform)
     elif dataset == 'imagenette':
         ds = huggingface_load_dataset("johnowhitaker/imagenette2-320")['train']
-        transform = T.Compose(rgb_transfroms_list)
         ds_torch = to_torch_ds(ds, transform)
         random.shuffle(ds_torch)
         n_total = len(ds_torch)
@@ -147,7 +141,6 @@ def data_process(dataset, image_size, sensor_train=False, grayscal=False, percen
         # print(ds_train[0][1])
     elif dataset == 'ch':
         ds = huggingface_load_dataset("dpdl-benchmark/colorectal_histology")['train']
-        transform = T.Compose(rgb_transfroms_list)
         ds_torch = to_torch_ds(ds, transform)
         random.shuffle(ds_torch)
         n_total = len(ds_torch)

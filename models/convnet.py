@@ -17,7 +17,7 @@ channel_dict =  {
 ''' ConvNet '''
 class ConvNet(nn.Module):
     def __init__(self, num_classes=10, net_width=128, net_depth=3, net_act='relu', 
-                 net_norm='instancenorm', net_pooling='avgpooling', im_size = (32,32), dataset = 'mnist'):
+                 net_norm='instancenorm', net_pooling='avgpooling', im_size = (32,32), dataset = 'cifar10'):
         super(ConvNet, self).__init__()
         channel =  channel_dict.get(dataset)
         # print("ConvNet channel: ", channel)

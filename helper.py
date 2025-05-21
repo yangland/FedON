@@ -75,7 +75,7 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
     for client_id in client_selection:
         c_sd_before[client_id] = copy.deepcopy(mco_dict[client_id]["c_model"].state_dict())
         client_data = fl_data_dict[client_id]
-        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=5)
+        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=5, drop_last=True)
 
         # train the classifier model
         # for dba attack
@@ -154,6 +154,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
                                                        attack_magnitude)
         elif attack_method == 'FedOda':
             c_grad_dict[client_id], _ = FedOda_attack
+
         
         mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
         grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
@@ -252,64 +253,78 @@ def label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha):
 
 
 def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
-    """
-    Args:
-        fl_class_num: total number of classes in the dataset
-        client_num: number of FL clients
-        fl_train: list of (data, label) tuples
-        dirichlet_alpha: concentration parameter for the Dirichlet distribution
+    from collections import defaultdict
+    import numpy as np
+    import random
 
-    Returns:
-        fl_data_dict: a dict mapping client_id -> list of (data, label)
-        labels_per_client_dict: a dict mapping client_id -> list of class labels
-        label_count_per_client_dict: a dict mapping client_id -> class label counts
-    """
+    # Group indices by label
     label_indices = [[] for _ in range(fl_class_num)]
     for idx, (_, label) in enumerate(fl_train):
         label_indices[label].append(idx)
 
+    # Dicts to store client data
     fl_data_dict = defaultdict(list)
-    labels_per_client_dict = {x: list(range(fl_class_num)) for x in range(client_num)}  # As per the format you want
-    label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}  # To store the count of labels for each client
+    labels_per_client_dict = {x: list(range(fl_class_num)) for x in range(client_num)}
+    label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}
+
+    total_samples_per_client = np.zeros(client_num, dtype=int)
 
     for class_id in range(fl_class_num):
-        # Shuffle indices for the current class
-        np.random.shuffle(label_indices[class_id])
-        # Generate Dirichlet proportions for this class across clients
-        proportions = np.random.dirichlet([dirichlet_alpha] * client_num)
-        # Split indices accordingly
         class_indices = label_indices[class_id]
+        np.random.shuffle(class_indices)
+
+        # Sample once from Dirichlet
+        proportions = np.random.dirichlet([dirichlet_alpha] * client_num)
+        proportions = proportions / proportions.sum()  # normalize again in case of precision error
         split_indices = (proportions * len(class_indices)).astype(int)
 
-        # Fix any rounding errors
-        diff = len(class_indices) - np.sum(split_indices)
+        # Correct rounding errors to match total count
+        diff = len(class_indices) - split_indices.sum()
         for i in range(diff):
             split_indices[i % client_num] += 1
 
-        start_idx = 0
+        start = 0
         for client_id, count in enumerate(split_indices):
-            end_idx = start_idx + count
-            for idx in class_indices[start_idx:end_idx]:
+            end = start + count
+            for idx in class_indices[start:end]:
                 fl_data_dict[client_id].append([fl_train[idx][0], class_id])
-                label_count_per_client_dict[client_id][class_id] += 1  # Count the occurrence of this class label
-            start_idx = end_idx
+                label_count_per_client_dict[client_id][class_id] += 1
+                total_samples_per_client[client_id] += 1
+            start = end
 
-    # Convert label_count_per_client_dict to a regular dict for cleaner output
-    label_count_per_client_dict = {client_id: dict(counts) for client_id, counts in label_count_per_client_dict.items()}
+    # Check for empty clients and redistribute if necessary
+    empty_clients = np.where(total_samples_per_client == 0)[0]
+    if len(empty_clients) > 0:
+        logger.warning(f"{len(empty_clients)} clients received no data, redistributing randomly.")
+        # Flatten all data
+        all_data = []
+        for client_data in fl_data_dict.values():
+            all_data.extend(client_data)
+        random.shuffle(all_data)
+
+        # Reinitialize dictionaries
+        fl_data_dict = defaultdict(list)
+        label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}
+        per_client = len(all_data) // client_num
+
+        for i, sample in enumerate(all_data):
+            cid = i % client_num
+            fl_data_dict[cid].append(sample)
+            label_count_per_client_dict[cid][sample[1]] += 1
+
+    # Convert label counts to regular dicts
+    label_count_per_client_dict = {cid: dict(cnts) for cid, cnts in label_count_per_client_dict.items()}
 
     logger.info(f"Created Dirichlet non-IID dataset with alpha={dirichlet_alpha}")
-    
-    # Log first 5 and last 5 items
     logger.info("Label counts per client:")
-
-    # First 5 items
     for client_id, counts in list(label_count_per_client_dict.items())[:5]:
         logger.info(f"Client {client_id}: {counts}")
-
-    # Last 5 items
     for client_id, counts in list(label_count_per_client_dict.items())[-5:]:
         logger.info(f"Client {client_id}: {counts}")
+
     return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
+
+
 
 
 def count_labels(pooled_ds):
@@ -374,7 +389,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
         if attack_method == 'fakedata':
             sample_size = len(ds)
             if_gray = True if image_size[0]==1 else False
-            fakedata, _ = data_process('fake', image_size, sensor_train=False, grayscal=if_gray) #TODO fix grayscal
+            fakedata, _ = data_process('fake', image_size, grayscal=if_gray) #TODO fix grayscal
 
             indices = random.sample(list(range(len(fakedata))), sample_size)
             x_fakedata = [x[0] for x in Subset(fakedata, indices)]
@@ -717,16 +732,15 @@ def grad_add_to_model(model, lr, grad):
     # update on the input model
     model_sd = model.state_dict()
     for key in model_sd.keys():
-        if isinstance(grad[key], torch.Tensor):
-            # Ensure gradient is of the same type as model parameter before updating
-            grad_to_add = (lr * grad[key]).to(model_sd[key].dtype)
-            
-            # Add the gradient to the model parameter, preserving the original dtype
-            model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
-            # model_sd[key] = (model_sd[key] + grad_to_add.to(model_sd[key].device)).to(model_sd[key].dtype)
+        if key not in grad:
+            continue  # 🔁 Skip buffers like 'bn1.running_mean', etc.
 
-            
-    model.load_state_dict(model_sd)  # This updates the original model object
+        if isinstance(grad[key], torch.Tensor):
+            grad_to_add = (lr * grad[key]).to(model_sd[key].dtype)
+            model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
+
+    model.load_state_dict(model_sd)
+
 
 
 def weight_to_model(model, weight):

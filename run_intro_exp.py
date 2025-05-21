@@ -563,7 +563,7 @@ def main():
     
     # Get models
     model_class = get_model(config.model_name)
-    model_fn = partial(model_class, num_classes=config.num_classes, dataset=config.dataset)
+    model_fn = partial(model_class, num_classes=config.num_classes)
     
     # Initialize models
     model0 = model_fn().to(config.device)

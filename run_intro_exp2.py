@@ -777,7 +777,7 @@ def main():
     malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
 
     model_class = get_model(config.model_name)
-    model_fn = partial(model_class, num_classes=config.num_classes, dataset=config.dataset)
+    model_fn = partial(model_class, num_classes=config.num_classes)
 
     server_model = model_fn().to(config.device)
     initial_server_flat = flatten_model(server_model.state_dict())

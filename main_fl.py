@@ -51,7 +51,7 @@ def main():
     ds_percentage = params.get('ds_percentage', 1)
     
     # FL process
-    train_data, test_data = data_process(params['fl_task'], image_size, sensor_train=False, percentage=ds_percentage)
+    train_data, test_data = data_process(params['fl_task'], image_size, percentage=ds_percentage)
     
     m_logger.info(f"Created dataset for FL task: {params['fl_task']}")
     

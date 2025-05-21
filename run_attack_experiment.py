@@ -152,7 +152,7 @@ def run_experiment(args):
 
     # Model setup
     model_class = get_model(args.model_name)
-    model_fn = partial(model_class, num_classes=10, dataset=args.dataset)
+    model_fn = partial(model_class, num_classes=10)
     model = model_fn().to(device)
     initial_state = clone_model_params(model)
     optimizer = optim.SGD(model.parameters(), lr=args.lr)

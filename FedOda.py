@@ -3,16 +3,20 @@ import torch.nn.functional as F
 from copy import deepcopy
 import math
 import logging
-
+from torch.utils.data import DataLoader
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, total_clients_num, 
-                 malicious_clients_num, E=5, learning_rate=0.01, scaling_factor=8,
-                 reduce_factor=0.8, increase_factor=1.1, threshold=0.7, logger=None):
+                 malicious_clients_num, E=5, scaling_factor=8,
+                 reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
+                 client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
+                 logger=None):
         self.model_fn = model_fn
         self.device = device
         self.E = E # Number of rounds to consider for history
-        self.learning_rate = learning_rate
+        self.client_learning_rate = client_learning_rate
+        self.client_data_size = client_data_size
+        self.client_batch_size = client_batch_size
         self.reduce_factor = reduce_factor
         self.increase_factor = increase_factor
         self.threshold = threshold
@@ -44,7 +48,6 @@ class FedOda:
     def get_attack_direction(self, model, train_loader):
         model.train()
         loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
-        grads = {name: torch.zeros_like(param) for name, param in model.named_parameters()}
 
         model.zero_grad()
         for inputs, labels in train_loader:
@@ -52,18 +55,30 @@ class FedOda:
             outputs = model(inputs)
             loss = loss_fn(outputs, labels)
             loss.backward()
-            break  # One batch is sufficient for direction
+            break
 
-        grad_flattened = []
-        for name, param in model.named_parameters():
-            g = param.grad.detach().clone()
-            grads[name] = g
-            grad_flattened.append(g.view(-1))
+        grads = {}
+        model_sd = model.state_dict()
+        named_param_dict = dict(model.named_parameters())
 
+        for name in model_sd:
+            if name in named_param_dict:
+                param = named_param_dict[name]
+                if param.grad is not None:
+                    grads[name] = param.grad.detach().clone()
+                else:
+                    grads[name] = torch.zeros_like(param)
+            else:
+                # For buffers like running_mean, running_var: zero them out or skip
+                grads[name] = torch.zeros_like(model_sd[name])
+
+        # Flatten
+        grad_flattened = [g.view(-1) for g in grads.values()]
         g_m_vec = torch.cat(grad_flattened)
         g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
         self.att_direction = g_m_unit
         return grads, g_m_unit
+
 
     def compute_predicted_benign_update(self, model_t, model_t_minus_1, train_loader):
         model = deepcopy(model_t).to(self.device)
@@ -76,17 +91,36 @@ class FedOda:
             outputs = model(inputs)
             loss = ce_loss(outputs, labels)
             loss.backward()
-            break  # One batch
+            break  # One batch is enough
 
-        grad_flattened = []
-        for param in model.parameters():
-            grad_flattened.append(param.grad.view(-1))
-        grad_vector = torch.cat(grad_flattened)
+        # Create a state_dict-shaped gradient dict
+        grad_dict = {}
+        named_param_dict = dict(model.named_parameters())
+        model_sd = model.state_dict()  # includes buffers
 
-        update_norm = torch.norm(flatten_model(model_t.state_dict()) - flatten_model(model_t_minus_1.state_dict()))
-        benign_direction = grad_vector / (grad_vector.norm() + 1e-10)
+        for key in model_sd:
+            if key in named_param_dict:
+                param = named_param_dict[key]
+                if param.grad is not None:
+                    grad_dict[key] = param.grad.detach().clone()
+                else:
+                    grad_dict[key] = torch.zeros_like(param)
+            else:
+                # For buffers like running_mean, running_var
+                grad_dict[key] = torch.zeros_like(model_sd[key])
+
+        # Flatten the full gradient
+        grad_flattened = flatten_model(grad_dict)
+
+        # Compute norm of model delta (using full state_dict)
+        delta = flatten_model(model_t.state_dict()) - flatten_model(model_t_minus_1.state_dict())
+        update_norm = delta.norm()
+
+        benign_direction = grad_flattened / (grad_flattened.norm() + 1e-10)
         benign_update = update_norm * benign_direction
+
         return benign_update
+
 
     def estimate_benign_clients(self, total_clients_num, malicious_clients_num, current_s_m):
         """
@@ -141,8 +175,8 @@ class FedOda:
             for i in range(E)
         ) / (d * E + 1e-10)
 
-        self.logger.debug(f"[FedOda] Bayesian inference: history length E = {E}")
-        self.logger.debug(f"[FedOda] sigma² = {sigma2:.6f}")
+        self.logger.info(f"[FedOda] Bayesian inference: history length E = {E}")
+        self.logger.info(f"[FedOda] sigma² = {sigma2:.6f}")
 
         log_likelihoods = []
         for i in range(E):
@@ -154,8 +188,8 @@ class FedOda:
             d2 = (delta_s - delta_s_pred).norm()**2
             l = (d1 - d2) / (2 * sigma2 + 1e-10)
 
-            self.logger.debug(
-                f"[FedOda] Iter {i}: "
+            self.logger.info(
+                f"[FedOda] Iter: t-{i}: "
                 f"||Δs - Δb||² = {d1:.6f}, "
                 f"||Δs - Δs_pred||² = {d2:.6f}, "
                 f"log-likelihood diff = {l:.6f}"
@@ -163,26 +197,68 @@ class FedOda:
 
             log_likelihoods.append(l)
 
-        total_ll = sum(log_likelihoods)
+        # ✅ Use average log-likelihood
+        avg_ll = sum(log_likelihoods) / E
 
-        # 🔒 Clamp total_ll to prevent overflow in exp()
-        # math.exp(80) ~ 10^34, beyond that = overflow
+        # 🔒 Clamp to prevent exp overflow
         max_exp = 80
-        clamped_ll = max(min(total_ll, max_exp), -max_exp)
+        clamped_ll = max(min(avg_ll, max_exp), -max_exp)
 
-        # Optional: smooth with temperature to avoid saturation
-        temperature = 10.0
+        # ✅ Tune temperature
+        temperature = 5 + 1000 * sigma2
         posterior = 1 / (1 + math.exp(-clamped_ll / temperature))
 
-        self.logger.info(f"[FedOda] Bayesian total log-likelihood = {total_ll:.6f} (clamped: {clamped_ll:.2f})")
+        self.logger.info(f"[FedOda] Bayesian avg log-likelihood = {avg_ll:.6f} (clamped: {clamped_ll:.2f})")
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
         return posterior
+
 
     def adjust_epsilon(self, epsilon, posterior):
         if posterior < self.threshold:
             return epsilon * self.reduce_factor
         else:
             return epsilon * self.increase_factor
+
+    def adjust_scaling_factor(self, scaling_factor, posterior):
+        """
+        Adjusts the scaling factor based on the history of posterior probabilities.
+        Keeps it stable if posterior is close to the threshold.
+
+        Returns:
+            float: Updated and clamped scaling factor.
+        """
+        # Save posterior history
+        if not hasattr(self, "posterior_history"):
+            self.posterior_history = []
+        self.posterior_history.append(posterior)
+        if len(self.posterior_history) > self.E:
+            self.posterior_history.pop(0)
+
+        # Compute average posterior over last E rounds
+        avg_posterior = sum(self.posterior_history) / len(self.posterior_history)
+
+        self.logger.info(f"[FedOda] Avg posterior over last {len(self.posterior_history)} rounds = {avg_posterior:.4f}")
+
+        # Stability margin around threshold
+        margin = 0.1
+        lower = self.threshold - margin
+        upper = self.threshold + margin
+
+        if lower <= avg_posterior <= upper:
+            # Posterior is close to threshold — keep it stable
+            self.logger.info("[FedOda] Posterior near threshold — scaling factor unchanged.")
+            new_factor = scaling_factor
+        elif avg_posterior < self.threshold:
+            new_factor = scaling_factor * self.reduce_factor
+            self.logger.info("[FedOda] Posterior low — increasing stealth (reduce scaling).")
+        else:
+            new_factor = scaling_factor * self.increase_factor
+            self.logger.info("[FedOda] Posterior high — increasing attack power.")
+
+        # Clamp to [0.5, 20]
+        new_factor = max(0.5, min(20.0, new_factor))
+        return new_factor
+
         
     def attack(self):
         if self.server_model is None:
@@ -193,15 +269,17 @@ class FedOda:
         if self.previous_server_model is None:
             self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
 
-            for x, y in self.pooled_loader:
-                print(f"x shape: {x.shape}, y: {y}")
-                break
+            # for x, y in self.pooled_loader:
+            #     # print(f"x shape: {x.shape}, y: {y}")
+            #     break
 
             # Step 1: Compute attack direction (g_m)
             g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
 
             # Step 2: Simulate benign update from one malicious client
-            benign_update_vec, benign_norm = self.simulate_benign_update(self.pooled_loader, max_batches=10)
+            benign_update_vec, benign_norm = self.simulate_benign_update(self.pooled_loader,
+                                                                         data_size=self.client_data_size,
+                                                                         batch_size=self.client_batch_size)
             self.epsilon = self.scaling_factor * benign_norm
             self.logger.info(f"[FedOda] Simulated benign norm = {benign_norm:.4f}, ε = {self.epsilon:.4f}")
 
@@ -215,13 +293,16 @@ class FedOda:
 
         # 🔁 Regular FedOda Attack
         self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
-        print(f"self.epsilon: {self.epsilon}")
-        
         g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
-        malicious_update = self.epsilon * g_m_vec
-
+        
         self.logger.info("[FedOda] Step 2: Predicting benign update direction")
-        benign_update = self.compute_predicted_benign_update(self.server_model, self.previous_server_model, self.pooled_loader)
+        benign_update = self.compute_predicted_benign_update(self.server_model, 
+                                                             self.previous_server_model, 
+                                                             self.pooled_loader)
+        benign_norm = benign_update.norm()
+        self.epsilon = self.scaling_factor * benign_norm
+        malicious_update = self.epsilon * g_m_vec
+        self.logger.info(f"[FedOda] benign_norm = {benign_norm:.4f}, self.scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
 
         self.logger.info("[FedOda] Step 3: Estimating benign client count (s_b)")
         s_b, s_hat = self.estimate_benign_clients(
@@ -242,52 +323,77 @@ class FedOda:
 
         self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
         posterior = self.bayesian_inference(d=len(malicious_update))
-        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
-        self.logger.info("[FedOda] Step 8: Adjusting scaling factor (epsilon)")
-        prev_epsilon = self.epsilon
-        print("prev_epsilon", prev_epsilon)
-        self.epsilon = self.adjust_epsilon(prev_epsilon, posterior)
-        self.logger.info(f"[FedOda] Epsilon L2 adjusted: {prev_epsilon:.4f} -> {self.epsilon:.4f}")
+        # ✅ Store posterior in history
+        if not hasattr(self, "posterior_history"):
+            self.posterior_history = []
+        self.posterior_history.append(posterior)
+        if len(self.posterior_history) > self.E:
+            self.posterior_history.pop(0)
+
+        self.logger.info("[FedOda] Step 8: Adjusting scaling factor")
+        prev_factor = self.scaling_factor
+        self.scaling_factor = self.adjust_scaling_factor(prev_factor, posterior)
+        self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
 
         self.logger.info("[FedOda] Step 9: Creating malicious update dict")
         malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
 
+        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * benign_norm:.4f}")
         self.logger.info("[FedOda] Attack completed, returning malicious update.")
+        
         return malicious_update_dict, malicious_update
 
 
-    def simulate_benign_update(self, loader, max_batches=1):
+    def simulate_benign_update(self, loader, data_size=500, batch_size=64):
         """
         Simulate benign training to estimate the update norm for one client.
-        
+
         Args:
-            loader: DataLoader containing malicious client data.
-            max_batches: Number of batches to simulate (usually 1 for speed).
-        
+            loader (DataLoader): DataLoader containing (input, label) batches.
+            data_size (int): Number of data points to use.
+            batch_size (int): Mini-batch size for training.
+
         Returns:
-            update_vector: Flattened parameter update vector.
-            update_norm: L2 norm of the update vector.
+            update_vector (Tensor): Flattened parameter update vector.
+            update_norm (float): L2 norm of the update vector.
         """
+
         model_before = deepcopy(self.server_model)
         model_after = deepcopy(self.server_model).to(self.device)
         model_after.train()
-        optimizer = torch.optim.SGD(model_after.parameters(), lr=self.learning_rate)
+        optimizer = torch.optim.SGD(model_after.parameters(), lr=self.client_learning_rate)
 
-        batch_count = 0
+        # Collect up to data_size samples from the loader
+        collected_x, collected_y = [], []
+        total = 0
         for inputs, labels in loader:
-            inputs, labels = inputs.to(self.device), labels.to(self.device)
+            collected_x.append(inputs)
+            collected_y.append(labels)
+            total += inputs.size(0)
+            if total >= data_size:
+                break
+
+        if total == 0:
+            raise ValueError("simulate_benign_update(): No data found in DataLoader.")
+
+        # Concatenate and truncate to exactly data_size
+        inputs = torch.cat(collected_x, dim=0)[:data_size]
+        labels = torch.cat(collected_y, dim=0)[:data_size]
+
+        # Create new DataLoader from collected data
+        temp_loader = DataLoader(list(zip(inputs, labels)), batch_size=batch_size, shuffle=True)
+
+        # Simulate local training
+        for batch_inputs, batch_labels in temp_loader:
+            batch_inputs, batch_labels = batch_inputs.to(self.device), batch_labels.to(self.device)
             optimizer.zero_grad()
-            outputs = model_after(inputs)
-            loss = F.cross_entropy(outputs, labels)
+            outputs = model_after(batch_inputs)
+            loss = F.cross_entropy(outputs, batch_labels)
             loss.backward()
             optimizer.step()
 
-            batch_count += 1
-            if batch_count >= max_batches:
-                break
-
-        # Compute flattened update vector
+        # Compute the update
         before = flatten_model(model_before.state_dict())
         after = flatten_model(model_after.state_dict())
         update = after - before
@@ -296,25 +402,31 @@ class FedOda:
         return update, norm
 
 
+
+
 # Utility
 def flatten_model(state_dict):
-    return torch.cat([param.view(-1).float() for param in state_dict.values()])
+    """Flatten all tensors in a state_dict (including buffers)."""
+    return torch.cat([
+        param.view(-1).float() for param in state_dict.values()
+        if isinstance(param, torch.Tensor)
+    ])
 
 def vector_to_state_dict(vector, reference_model):
     """
-    Convert a flattened vector into a state_dict that matches the structure of reference_model.
-
-    Args:
-        vector (torch.Tensor): Flattened model update vector.
-        reference_model (torch.nn.Module): A model whose parameter shapes are used for reconstruction.
-
-    Returns:
-        state_dict (dict): A dictionary of parameter tensors shaped like reference_model.
+    Convert a flattened vector into a full state_dict (including buffers)
+    that matches the structure of reference_model.state_dict().
     """
-    state_dict = {}
+    ref_sd = reference_model.state_dict()
+    new_sd = {}
     idx = 0
-    for name, param in reference_model.named_parameters():
-        numel = param.numel()
-        state_dict[name] = vector[idx: idx + numel].view_as(param).clone().detach()
-        idx += numel
-    return state_dict
+    for key, param in ref_sd.items():
+        if isinstance(param, torch.Tensor):
+            numel = param.numel()
+            new_sd[key] = vector[idx: idx + numel].view_as(param).clone().detach()
+            idx += numel
+        else:
+            # Non-tensor (rare), copy as-is
+            new_sd[key] = param
+    return new_sd
+

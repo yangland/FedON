@@ -27,6 +27,7 @@ from aggr.fedavg_median import coordinate_wise_median, fedavg, trimmed_mean
 from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
+import statistics
 from FedOda import FedOda
 
 logger = logging.getLogger("individual_logging")
@@ -168,40 +169,42 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     if attack_method == 'FedOda':
         # create the pooled dataset for FedOda
         pooled_data = []
+        malicious_data_lengths = []
+    
         for client_id, client_data in fl_data_dict.items():
             if client_id in malicious_client_ids:
                 pooled_data.append(client_data)
+                malicious_data_lengths.append(len(client_data))
+        
+        if malicious_data_lengths:
+            mali_client_data_size = int(statistics.median(malicious_data_lengths))
+            logger.info(f"Median malicious client_data_size: {mali_client_data_size}")
+        else:
+            mali_client_data_size = 0  # or handle empty case as needed
+        
         
         label_distribution = count_labels(pooled_data)
         logger.info(f"pooled dataset label distribution: {label_distribution}")
         
         # pretrain the model to get attack direction
-        model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])
-        # FedOda_ = FedOda(model_fn=model_fn, 
-        #                  device=device, 
-        #                  learning_rate=0.001, 
-        #                  scaling_factor=8,
-        #                  reduce_factor=0.8,
-        #                  increase_factor=1.05)
-        # logger.info(f"max_attack_l2_dist: {max_attack_l2_dist:.3f}, max_attack_acc: {max_attack_acc:.3f}")
-        # logger.info(f"attack_accuracy_list: {[round(x, 3) for x in attack_accuracy_list]}")
-        # logger.info(f"l2_distances: {[round(x, 3) for x in l2_distances]}")
-        # logger.info(f"modelt_acc: {modelt_acc}")       
+        model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])    
         
         pooled_dataset = ConcatDataset(pooled_data)
-        pooled_loader = DataLoader(pooled_dataset, batch_size=client_batch_size*2, shuffle=True)
+        pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True)
         
         foda = FedOda(model_fn=model_fn, 
                       device=device,
                       pooled_loader=pooled_loader,
                       total_clients_num=client_num,
                       malicious_clients_num=len(malicious_client_ids),
-                      E=10,
-                      learning_rate=0.01,
+                      E=5,
                       scaling_factor=8,
                       reduce_factor=0.9,
-                      increase_factor=1.1,
+                      increase_factor=1.05,
                       threshold=0.7,
+                      client_learning_rate=c_lr,
+                      client_data_size=mali_client_data_size,
+                      client_batch_size=client_batch_size,
                       logger=logger)
     else:
         foda = None

@@ -12,7 +12,8 @@ def krum_aggr(model_dict, f, m):
 
     multi_krum_m, krum_clients, client_weights = \
         krum(reveled_model_dict, f, m)
-
+    
+    krum_clients.sort()
     krum_model_dict = dict((client_id, model_dict[client_id]) for client_id in krum_clients)
     new_weights = fedavg(krum_model_dict)
     
