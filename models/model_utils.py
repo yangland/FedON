@@ -28,6 +28,7 @@ def get_model(model_name):
         "SqueezeNet_32": SqueezeNet_32,
         "LeNet5": LeNet5,
         "SimpleCNN": SimpleCNN,
+        "MobileNetV2_28": MobileNetV2_28, # works for fmnist
     }
 
     if model_name not in model_dict:
@@ -63,6 +64,24 @@ class MobileNetV2_32(nn.Module):
         self.model.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
         
         # Modify classifier
+        self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
+        
+    def forward(self, x):
+        return self.model(x)
+
+
+class MobileNetV2_28(nn.Module):
+    def __init__(self, num_classes=10):
+        super(MobileNetV2_28, self).__init__()
+        self.model = models.mobilenet_v2(weights=None)
+        
+        # Adjust first convolution: in_channels=1 for grayscale, smaller input
+        self.model.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        
+        # Optionally remove the second downsampling layer if needed (e.g., features[1])
+        # to retain more spatial information on such a small input
+
+        # Modify the classifier to output the desired number of classes
         self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
         
     def forward(self, x):

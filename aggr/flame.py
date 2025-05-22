@@ -16,22 +16,20 @@ import logging
 logger = logging.getLogger("individual_logging")
 logger.addHandler(logging.StreamHandler())
 
+
 def flame_aggr(server_sd, grad_dict, noise=0.001, exp_dir="", iter=0):
     client_ids = list(grad_dict.keys())
     reveled_model_dict = {}
     
+    # Convert gradients to model states (current approach)
     for client_id in client_ids:
         reveled_model_dict[client_id] = get_model_merged(grad_dict[client_id], server_sd)
         
-    new_server_sd, flame_clients = flame(server_sd, 
-                                         reveled_model_dict,
-                                         noise, 
-                                         client_ids, 
-                                         exp_dir, 
-                                         iter)
+    # Get updated server state
+    new_server_sd, flame_clients = flame(server_sd, reveled_model_dict, noise, client_ids, exp_dir, iter)
     
+    # Return the gradient update (difference between new and old server state)
     server_grad = get_model_update(new_server_sd, server_sd)
-    # print("server_grad keys", server_grad.keys())
     return server_grad, flame_clients
 
 
@@ -43,18 +41,8 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     update_params = []
     client_ids = []
     num_clients = len(model_dict)
-    # num_malicious_clients = int(malicious_rate * num_clients)
-    # num_benign_clients = num_clients - num_malicious_clients
-    new_server_sd = deepcopy(server_sd)
+    server_sd_copy = deepcopy(server_sd)
     
-    
-    # for client_id, param in model_dict.items():
-    #     # parms as state_dict
-    #     local_model_vector.append(modelsd2flat(param))
-    #     # get the local weight difference (gradient)
-    #     update_params.append(get_model_update(param, server_sd))
-    #     client_ids.append(client_id)
-        
         
     for client_id in sorted(model_dict.keys()):
         param = model_dict[client_id]
@@ -66,20 +54,18 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     for i in range(len(local_model_vector)):
         cos_i = []
         for j in range(len(local_model_vector)):
-            # print("local_model_vector[i].size(): ", local_model_vector[i].size())
-            # print("local_model_vector[j].size(): ", local_model_vector[j].size())
-            
             cos_ij = 1- F.cosine_similarity(local_model_vector[i],local_model_vector[j], dim=0)
             cos_i.append(cos_ij.item())
         cos_list.append(cos_i)
 
-    print(f"cos_list len: {len(cos_list)}")
+    
     if np.isnan(cos_list).any():
         print("NaN detected in cos_list!")
         print(f"NaN locations: {np.where(np.isnan(cos_list))}")
         cos_list = np.nan_to_num(cos_list, nan=0.0)
-
-    logger.info(f"cos_M: {np.array(cos_list)}")
+    
+    # logger.info(f"cos_list len: {len(cos_list)}")
+    # logger.info(f"cos_M: {np.array(cos_list)}")
     
     # plot the cosine similarity matrix
     matrix_plot(np.array(cos_list), f"cos_M{iter}", f"cos_M_{iter}", "client_id", "client_id",
@@ -87,7 +73,7 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     
     
     clusterer = hdbscan.HDBSCAN(min_cluster_size=num_clients//2 + 1,min_samples=1,allow_single_cluster=True).fit(cos_list)
-    print(f"flame clusterer.labels_ {str(clusterer.labels_)}")
+    logger.info(f"flame clusterer.labels_ {str(clusterer.labels_)}")
     benign_idx = []
     norm_list = np.array([])
 
@@ -136,7 +122,7 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
                     continue
                 update_params[benign_idx[i]][key] *= gama
     
-    new_server_sd = no_defence_balance([update_params[i] for i in benign_idx], server_sd)
+    new_server_sd = no_defence_balance([update_params[i] for i in benign_idx], server_sd_copy)
     
     #add noise
     with torch.no_grad():

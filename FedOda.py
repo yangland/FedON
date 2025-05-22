@@ -46,6 +46,7 @@ class FedOda:
         self.history_s_m = []
 
     def get_attack_direction(self, model, train_loader):
+        model = deepcopy(model).to(self.device) 
         model.train()
         loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
 
@@ -81,6 +82,9 @@ class FedOda:
 
 
     def compute_predicted_benign_update(self, model_t, model_t_minus_1, train_loader):
+        # Simulate benign update
+        # Direction using one batch of benign data
+        # Norm using norm of server model delta
         model = deepcopy(model_t).to(self.device)
         model.eval()
         model.zero_grad()
@@ -162,6 +166,7 @@ class FedOda:
             self.history_pred_server_updates.pop(0)
             self.history_s_m.pop(0)
 
+
     def bayesian_inference(self, d):
         E = len(self.history_server_updates)
 
@@ -219,6 +224,7 @@ class FedOda:
         else:
             return epsilon * self.increase_factor
 
+
     def adjust_scaling_factor(self, scaling_factor, posterior):
         """
         Adjusts the scaling factor based on the history of posterior probabilities.
@@ -236,113 +242,29 @@ class FedOda:
 
         # Compute average posterior over last E rounds
         avg_posterior = sum(self.posterior_history) / len(self.posterior_history)
-
+        
+        self.logger.info(f"[FedOda] Posterior history: {self.posterior_history}")
         self.logger.info(f"[FedOda] Avg posterior over last {len(self.posterior_history)} rounds = {avg_posterior:.4f}")
 
         # Stability margin around threshold
-        margin = 0.1
+        margin = 0.15
         lower = self.threshold - margin
         upper = self.threshold + margin
 
         if lower <= avg_posterior <= upper:
             # Posterior is close to threshold — keep it stable
-            self.logger.info("[FedOda] Posterior near threshold — scaling factor unchanged.")
+            self.logger.info(f"[FedOda] Posterior near threshold {avg_posterior} in [{lower, upper}] — scaling factor unchanged.")
             new_factor = scaling_factor
-        elif avg_posterior < self.threshold:
+        elif avg_posterior < lower:
             new_factor = scaling_factor * self.reduce_factor
-            self.logger.info("[FedOda] Posterior low — increasing stealth (reduce scaling).")
+            self.logger.info(f"[FedOda] Posterior low < {lower} — increasing stealth (reduce scaling).")
         else:
             new_factor = scaling_factor * self.increase_factor
-            self.logger.info("[FedOda] Posterior high — increasing attack power.")
+            self.logger.info(f"[FedOda] Posterior high > {upper} — increasing attack power.")
 
         # Clamp to [0.5, 20]
         new_factor = max(0.5, min(20.0, new_factor))
         return new_factor
-
-        
-    def attack(self):
-        if self.server_model is None:
-            self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
-            return None, None
-
-        # 🔁 First Iteration: No history
-        if self.previous_server_model is None:
-            self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
-
-            # for x, y in self.pooled_loader:
-            #     # print(f"x shape: {x.shape}, y: {y}")
-            #     break
-
-            # Step 1: Compute attack direction (g_m)
-            g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
-
-            # Step 2: Simulate benign update from one malicious client
-            benign_update_vec, benign_norm = self.simulate_benign_update(self.pooled_loader,
-                                                                         data_size=self.client_data_size,
-                                                                         batch_size=self.client_batch_size)
-            self.epsilon = self.scaling_factor * benign_norm
-            self.logger.info(f"[FedOda] Simulated benign norm = {benign_norm:.4f}, ε = {self.epsilon:.4f}")
-
-            # Step 3: Apply attack
-            malicious_update = self.epsilon * g_m_vec
-
-            # Step 4: Convert vector to dict
-            malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
-            self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
-            return malicious_update_dict, malicious_update
-
-        # 🔁 Regular FedOda Attack
-        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
-        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
-        
-        self.logger.info("[FedOda] Step 2: Predicting benign update direction")
-        benign_update = self.compute_predicted_benign_update(self.server_model, 
-                                                             self.previous_server_model, 
-                                                             self.pooled_loader)
-        benign_norm = benign_update.norm()
-        self.epsilon = self.scaling_factor * benign_norm
-        malicious_update = self.epsilon * g_m_vec
-        self.logger.info(f"[FedOda] benign_norm = {benign_norm:.4f}, self.scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
-
-        self.logger.info("[FedOda] Step 3: Estimating benign client count (s_b)")
-        s_b, s_hat = self.estimate_benign_clients(
-            total_clients_num=self.total_clients_num,
-            malicious_clients_num=self.malicious_clients_num,
-            current_s_m=self.current_s_m
-        )
-        self.logger.info(f"[FedOda] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}")
-
-        self.logger.info("[FedOda] Step 4: Estimating server update assuming malicious inclusion")
-        delta_s_pred = self.estimate_server_update(s_b, self.current_s_m, benign_update, malicious_update)
-
-        self.logger.info("[FedOda] Step 5: Observing actual server update")
-        delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
-
-        self.logger.info("[FedOda] Step 6: Updating history")
-        self.update_history(delta_s, benign_update, delta_s_pred, self.current_s_m)
-
-        self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
-        posterior = self.bayesian_inference(d=len(malicious_update))
-
-        # ✅ Store posterior in history
-        if not hasattr(self, "posterior_history"):
-            self.posterior_history = []
-        self.posterior_history.append(posterior)
-        if len(self.posterior_history) > self.E:
-            self.posterior_history.pop(0)
-
-        self.logger.info("[FedOda] Step 8: Adjusting scaling factor")
-        prev_factor = self.scaling_factor
-        self.scaling_factor = self.adjust_scaling_factor(prev_factor, posterior)
-        self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
-
-        self.logger.info("[FedOda] Step 9: Creating malicious update dict")
-        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
-
-        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * benign_norm:.4f}")
-        self.logger.info("[FedOda] Attack completed, returning malicious update.")
-        
-        return malicious_update_dict, malicious_update
 
 
     def simulate_benign_update(self, loader, data_size=500, batch_size=64):
@@ -401,6 +323,98 @@ class FedOda:
 
         return update, norm
 
+        
+    def attack(self):
+        if self.server_model is None:
+            self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
+            return None, None
+
+        # 🔁 First Iteration: No history
+        if self.previous_server_model is None:
+            self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
+
+            # for x, y in self.pooled_loader:
+            #     print(f"x shape: {x.shape}, y: {y}")
+            #     break
+
+            # Step 1: Compute attack direction (g_m)
+            g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+
+            # Step 2: Simulate benign update from one malicious client
+            benign_update_vec, benign_norm = self.simulate_benign_update(loader=self.pooled_loader,
+                                                                         data_size=self.client_data_size,
+                                                                         batch_size=self.client_batch_size)
+            self.epsilon = self.scaling_factor * benign_norm
+            self.logger.info(f"[FedOda] Simulated benign norm = {benign_norm:.4f}, ε = {self.epsilon:.4f}")
+
+            # Step 3: Apply attack
+            malicious_update = self.epsilon * g_m_vec
+
+            # Step 4: Convert vector to dict
+            malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+            self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
+            
+            # use 0 for posterior
+            posterior = 0
+            return malicious_update_dict, malicious_update, posterior
+
+        # 🔁 Regular FedOda Attack
+        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
+        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+        
+        self.logger.info("[FedOda] Step 2: Predicting benign update")
+        
+        # benign_update = self.compute_predicted_benign_update(model_t=self.server_model, 
+        #                                                      model_t_minus_1=self.previous_server_model, 
+        #                                                      train_loader=self.pooled_loader)
+        
+        benign_update, benign_norm = self.simulate_benign_update(loader=self.pooled_loader,
+                                                                data_size=self.client_data_size,
+                                                                batch_size=self.client_batch_size)
+        
+        self.epsilon = self.scaling_factor * benign_norm
+        malicious_update = self.epsilon * g_m_vec
+        self.logger.info(f"[FedOda] benign_norm = {benign_norm:.4f}, self.scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
+
+        self.logger.info("[FedOda] Step 3: Estimating benign client count (s_b)")
+        s_b, s_hat = self.estimate_benign_clients(
+            total_clients_num=self.total_clients_num,
+            malicious_clients_num=self.malicious_clients_num,
+            current_s_m=self.current_s_m
+        )
+        self.logger.info(f"[FedOda] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}")
+
+        self.logger.info("[FedOda] Step 4: Estimating server update assuming malicious inclusion")
+        delta_s_pred = self.estimate_server_update(s_b, self.current_s_m, benign_update, malicious_update)
+
+        self.logger.info("[FedOda] Step 5: Observing actual server update")
+        delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
+
+        self.logger.info("[FedOda] Step 6: Updating history")
+        self.update_history(delta_s, benign_update, delta_s_pred, self.current_s_m)
+
+        self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
+        posterior = self.bayesian_inference(d=len(malicious_update))
+
+        # ✅ Store posterior in history
+        if not hasattr(self, "posterior_history"):
+            self.posterior_history = []
+        self.posterior_history.append(posterior)
+        if len(self.posterior_history) > self.E:
+            self.posterior_history.pop(0)
+
+        self.logger.info("[FedOda] Step 8: Adjusting scaling factor")
+        prev_factor = self.scaling_factor
+        self.scaling_factor = self.adjust_scaling_factor(prev_factor, posterior)
+        self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
+
+        self.logger.info("[FedOda] Step 9: Creating malicious update dict")
+        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+
+        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * benign_norm:.4f}")
+        self.logger.info("[FedOda] Attack completed, returning malicious update.")
+        
+        return malicious_update_dict, malicious_update, posterior
 
 
 

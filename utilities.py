@@ -412,20 +412,24 @@ def no_defence_balance(params, global_parameters):
     return global_parameters
 
 def get_model_update(updated_model, model):
-    '''get the update weight'''
-    update2 = {}
-    for key, var in updated_model.items():
-        update2[key] = updated_model[key] - model[key]
-    return update2
+    '''Returns the difference while preserving gradients'''
+    update = {}
+    for key in updated_model:
+        if key.endswith('num_batches_tracked'):
+            continue
+        update[key] = updated_model[key] - model[key].detach()  # Explicitly detach base model
+    return update
 
-def get_model_merged(model1_sd, model2_sd):
-    '''get the update weight'''
-    output = OrderedDict()
-    for key, var in model1_sd.items():
-        output[key] = model1_sd[key].detach() + model2_sd[key].detach()
-    return output
-
-import torch
+def get_model_merged(gradient_update, base_model):
+    '''Merges gradient into model while preserving autograd'''
+    merged = {}
+    for key in base_model:
+        if key.endswith('num_batches_tracked'):
+            merged[key] = base_model[key]  # Copy directly
+        else:
+            # Preserve gradient from the update while keeping base model constant
+            merged[key] = base_model[key].detach() + gradient_update[key]
+    return merged
 
 
 def modelsd2flat(model_dict):

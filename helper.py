@@ -37,7 +37,8 @@ import torch.nn.functional as F
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, 
                     dba_poisoning_per_batch=0.2, FedOda_class=None, device=None):
-
+    foda_posterior = None  # initialize
+    
     if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
         if FedOda_class.server_model is None:
             FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
@@ -60,11 +61,11 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     c_grad_dict = {}
 
     # process for both benign and malicious clients
-    c_grad_dict = grad_process_c_model(mco_dict, client_selection, c_sd_before,
+    c_grad_dict, foda_posterior = grad_process_c_model(mco_dict, client_selection, c_sd_before,
                                             malicious_client_ids, attack_method,
-                                            FedOda_class, device)
+                                            FedOda_class, foda_posterior, device)
 
-    return c_grad_dict
+    return c_grad_dict, foda_posterior
 
 
 
@@ -114,7 +115,7 @@ attack_magnitude_mapping = {
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, device):
+                         FedOda_class, foda_posterior, device):
     c_grad_dict = {}
 
     # benign clients
@@ -129,7 +130,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     
     if attack_method == 'FedOda':
         if FedOda_class is not None:
-            FedOda_attack = FedOda_class.attack()
+            foda_update_dict, malicious_update, foda_posterior = FedOda_class.attack()
         else:
             raise ValueError("FedOda_class is not initialized.")
     
@@ -153,12 +154,13 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
                                                        mco_dict[client_id]["c_model"].state_dict(), 
                                                        attack_magnitude)
         elif attack_method == 'FedOda':
-            c_grad_dict[client_id], _ = FedOda_attack
+            c_grad_dict[client_id] = foda_update_dict
+        else:
+            logger.info(f"unknown attack method {attack_method}")
 
-        
         mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
         grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
-    return c_grad_dict
+    return c_grad_dict, foda_posterior
 
 
 def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num):
@@ -253,10 +255,6 @@ def label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha):
 
 
 def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
-    from collections import defaultdict
-    import numpy as np
-    import random
-
     # Group indices by label
     label_indices = [[] for _ in range(fl_class_num)]
     for idx, (_, label) in enumerate(fl_train):
@@ -305,12 +303,18 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
         # Reinitialize dictionaries
         fl_data_dict = defaultdict(list)
         label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}
-        per_client = len(all_data) // client_num
+        total_samples_per_client = np.zeros(client_num, dtype=int)
 
         for i, sample in enumerate(all_data):
             cid = i % client_num
             fl_data_dict[cid].append(sample)
             label_count_per_client_dict[cid][sample[1]] += 1
+            total_samples_per_client[cid] += 1
+
+    # Final safety check: ensure no client is empty
+    for cid in range(client_num):
+        if len(fl_data_dict[cid]) == 0:
+            raise ValueError(f"Client {cid} has no training samples after Dirichlet allocation.")
 
     # Convert label counts to regular dicts
     label_count_per_client_dict = {cid: dict(cnts) for cid, cnts in label_count_per_client_dict.items()}
@@ -323,6 +327,7 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
         logger.info(f"Client {client_id}: {counts}")
 
     return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
+
 
 
 
@@ -604,7 +609,11 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
             prediction = output.argmax(dim=1, keepdim=True)
             correct += prediction.eq(target.view_as(prediction)).sum().item()    
     
-    return train_loss / len(train_loader), correct / len(train_loader.dataset)
+    # print("train_loss", train_loss)
+    # print("correct", correct)
+    # print("len(train_loader.dataset)", len(train_loader.dataset))
+    # print("len(train_loader)", len(train_loader))
+    return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)
 
 
 

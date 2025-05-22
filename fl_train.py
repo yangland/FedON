@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from PIL import Image
 from sklearn.metrics import accuracy_score
-
+from copy import deepcopy
 from torch.utils.data import ConcatDataset, DataLoader, Subset
 import torchvision.transforms as T
 from tqdm import tqdm
@@ -28,11 +28,17 @@ from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 import statistics
-from FedOda import FedOda
+from FedOda import FedOda, flatten_model
 
 logger = logging.getLogger("individual_logging")
 
 def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
+    random.seed(params.get('seed', 42))
+    np.random.seed(params.get('seed', 42))
+    torch.manual_seed(params.get('seed', 42))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(params.get('seed', 42))
+    
     client_num = params['n']
     malicious_num = params['m']
     global device
@@ -111,7 +117,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     clients_selection_csv = CsvLogging(f"{timestamp}_clients_selections", exp_dir, clients_selection_csv_header)
 
     # selection mistakes
-    mistakes_csv_header = ["iter", "mistakes", "selections"]
+    mistakes_csv_header = ["iter", "mistakes", "posterior"]
     mistakes_csv = CsvLogging(f"{timestamp}_mistakes", exp_dir, mistakes_csv_header)
 
 
@@ -197,7 +203,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                       pooled_loader=pooled_loader,
                       total_clients_num=client_num,
                       malicious_clients_num=len(malicious_client_ids),
-                      E=5,
+                      E=1,
                       scaling_factor=8,
                       reduce_factor=0.9,
                       increase_factor=1.05,
@@ -246,10 +252,12 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     # send main to all clients
     mco_dict = send_main_to_clients(client_num, mco_dict)
     benign_client_ids = []
-        
+    fid_avg = 0
+    
     #fl train
     for iter in range(fl_iter_num):
-        # fl training
+        t1 = time.time()
+
         client_selection = random.sample(client_list, clients_per_iter)
         client_selection.sort()
         logger.info(f"FL iteration: {iter}, selected clients: {client_selection}")
@@ -260,21 +268,21 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         logger.info("local training for clients' C models (AGR)")
         
+        server_before = flatten_model(mco_dict[-1]["c_model"].state_dict())
+        
         # local training for clients' C models including attack
-        c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
+        c_grad_dict, foda_posterior = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
                                    client_batch_size, dba_poisoning_per_batch, 
                                    FedOda_class = foda, device=device)
 
-        # if attack_method == 'FedOda':
-        #     server_model = mco_dict[-1]["c_model"]
-        #     foda.plot_distance_relationship(server_model, iter, output_dir=f'{exp_dir}/plots')
+        server_after = flatten_model(mco_dict[-1]["c_model"].state_dict())
+        server_delta = (server_after - server_before).norm()
+        if server_delta > 1e-6:
+            logger.warning(f"[Warning] Server model was modified before aggregation! ||Δ|| = {server_delta:.6f}")
 
-        server_iter = 0
-        fid_avg = 0
-        t1 = time.time()
         
-        server_iter += 1
+        
         if defense == 'AGGR':
             if aggr == 'fedavg':
                 c_grad = fedavg(c_grad_dict)
@@ -294,22 +302,21 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 m = 1 # single krum
                 c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
                 benign_client_ids = krum_clients
-                print(f"krum clients: {krum_clients}")
+                logger.info(f"krum clients: {krum_clients}")
             elif aggr == "multi-krum":
                 f = client_num//2 - 1
                 m = client_num//2 - 1 # multi krum
                 c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
                 benign_client_ids = krum_clients
-                print(f"multi-krum clients: {krum_clients}")                       
+                logger.info(f"multi-krum clients: {krum_clients}")                       
             elif aggr == 'flame':
                 # flame works with model weight, convert grad to model weight
-                server_c_sd = mco_dict[-1]["c_model"].state_dict()
+                server_c_sd = deepcopy(mco_dict[-1]["c_model"].state_dict())
                 c_grad, flame_clients = flame_aggr(server_c_sd, c_grad_dict, exp_dir=exp_dir, iter=iter)
                 benign_client_ids = flame_clients
-                print(f"flame clients: {flame_clients}")
+                logger.info(f"flame clients: {flame_clients}")
             elif aggr == 'normbound':
-                print("aggr: normbound")
-                server_c_sd = mco_dict[-1]["c_model"].state_dict()
+                server_c_sd = deepcopy(mco_dict[-1]["c_model"].state_dict())
                 c_grad = normbound_aggr(server_c_sd, c_grad_dict)
             elif aggr == 'fltrust':
                 # train server with root dataset
@@ -371,10 +378,13 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if len(attack_success_rate) != 0:
             logger.info(f"attack_success:{attack_success_rate}")
         
-        # for FLAME and FedEval, check the clients selection's malicious rate
+        # for FLAME and Krum, check the clients selection's malicious rate
         if benign_client_ids:
-            mistake_rate =  len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
-            mistakes_csv.append_save_csv([iter, mistake_rate])
+            mistake_rate = len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
+            mistakes_csv.append_save_csv([iter, mistake_rate, foda_posterior])  # Add posterior here
+            if foda_posterior==None: foda_posterior = 0
+            logger.info(f"[FedOda] iter {iter}: mistake_rate = {mistake_rate:.4f}, posterior = {foda_posterior:.4f}")
+
 
         
         e = int((time.time()-t1)/(iter+1) *
