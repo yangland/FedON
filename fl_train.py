@@ -203,7 +203,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                       pooled_loader=pooled_loader,
                       total_clients_num=client_num,
                       malicious_clients_num=len(malicious_client_ids),
-                      E=1,
+                      E=5,
                       scaling_factor=8,
                       reduce_factor=0.9,
                       increase_factor=1.05,

@@ -4,7 +4,7 @@ if_series: False
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "multi-krum" # "multi-krum", "fedavg", "fltrust"
+aggr: "fedavg" # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 1 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
@@ -24,7 +24,7 @@ fl_task: 'cifar10'
 c_model: "MobileNetV2_32" # "ConvNet", "ResNet18", "LeNet5",  "MobileNetV2_32"
 ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
-dirichlet_alpha: 1.0
+dirichlet_alpha: 0.5
 # '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
 # 'clear_label_backdoor', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'dba', 'FedOda']
 attack_method: 'FedOda'
