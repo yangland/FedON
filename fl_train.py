@@ -197,17 +197,19 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         pooled_dataset = ConcatDataset(pooled_data)
         pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True)
+        original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=5)
         
         foda = FedOda(model_fn=model_fn, 
                       device=device,
                       pooled_loader=pooled_loader,
+                      vali_loader=original_vali_loader,
                       total_clients_num=client_num,
                       malicious_clients_num=len(malicious_client_ids),
-                      E=5,
-                      scaling_factor=8,
+                      E=3,
+                      scaling_factor=5,
                       reduce_factor=0.9,
                       increase_factor=1.05,
-                      threshold=0.5,
+                      threshold=0.6,
                       client_learning_rate=c_lr,
                       client_data_size=mali_client_data_size,
                       client_batch_size=client_batch_size,
@@ -321,7 +323,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             elif aggr == 'fltrust':
                 # train server with root dataset
                 server_c_grad = fltrust_server_iteration(iter, c_epochs,
-                                                            root_ds, mco_dict, batch_size=5)
+                                                        root_ds, mco_dict, 
+                                                        batch_size=5, device=device)
                 
                 # caculate trust score
                 FLTrustTotalScore = 1e-9
@@ -382,8 +385,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if benign_client_ids:
             mistake_rate = len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
             mistakes_csv.append_save_csv([iter, mistake_rate, foda_posterior])  # Add posterior here
-            if foda_posterior==None: foda_posterior = 0
-            logger.info(f"[FedOda] iter {iter}: mistake_rate = {mistake_rate:.4f}, posterior = {foda_posterior:.4f}")
+
+            if attack_method == 'FedOda':
+                if foda_posterior==None: 
+                    foda_posterior = 0
+                logger.info(f"[FedOda] iter {iter}: mistake_rate = {mistake_rate:.4f}, posterior = {foda_posterior:.4f}")
 
 
         

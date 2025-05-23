@@ -760,7 +760,7 @@ def weight_to_model(model, weight):
     return model
 
 
-def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size):
+def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, device):
         
     c_sd_before = copy.deepcopy(mco_dict[-1]["c_model"].state_dict())
 
@@ -775,7 +775,8 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size):
                                   client_id=-1,
                                   malicious_client_ids=[],
                                   optimizer_poison=None,
-                                  dba_poisoning_per_batch=0
+                                  dba_poisoning_per_batch=0,
+                                  device=device
                                 )
         if epoch % 1 == 0:
             logger.info(f"FLTrust server_ep{epoch}: C-Model, loss: {loss:.6f}, train acc: {acc:.6f}")

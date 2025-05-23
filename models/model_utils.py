@@ -27,7 +27,8 @@ def get_model(model_name):
         "SqueezeNet": SqueezeNet,
         "SqueezeNet_32": SqueezeNet_32,
         "LeNet5": LeNet5,
-        "SimpleCNN": SimpleCNN,
+        "SimpleCNN_28": SimpleCNN_28,
+        "SimpleCNN_32": SimpleCNN_32,
         "MobileNetV2_28": MobileNetV2_28, # works for fmnist
     }
 
@@ -183,9 +184,9 @@ class LeNet5(nn.Module):
         x = self.fc3(x)
         return x
 
-class SimpleCNN(nn.Module):
+class SimpleCNN_28(nn.Module):
     def __init__(self, num_classes=10):
-        super(SimpleCNN, self).__init__()
+        super(SimpleCNN_28, self).__init__()
         self.conv1 = nn.Conv2d(1, 32, kernel_size=3, padding=1)  # (1,28,28) -> (32,28,28)
         self.pool = nn.MaxPool2d(2, 2)                           # -> (32,14,14)
         self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) # -> (64,14,14)
@@ -197,5 +198,24 @@ class SimpleCNN(nn.Module):
         x = self.pool(F.relu(self.conv1(x)))   # -> (32,14,14)
         x = self.pool2(F.relu(self.conv2(x)))  # -> (64,7,7)
         x = x.view(x.size(0), -1)              # Flatten to (B, 3136)
+        x = F.relu(self.fc1(x))
+        return self.fc2(x)
+
+
+
+class SimpleCNN_32(nn.Module):
+    def __init__(self, num_classes=10):
+        super(SimpleCNN_32, self).__init__()
+        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)   # (3,32,32) -> (32,32,32)
+        self.pool = nn.MaxPool2d(2, 2)                            # -> (32,16,16)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1) # -> (64,16,16)
+        self.pool2 = nn.MaxPool2d(2, 2)                           # -> (64,8,8)
+        self.fc1 = nn.Linear(64 * 8 * 8, 128)                     # 64*8*8 = 4096
+        self.fc2 = nn.Linear(128, num_classes)
+
+    def forward(self, x):
+        x = self.pool(F.relu(self.conv1(x)))     # -> (32,16,16)
+        x = self.pool2(F.relu(self.conv2(x)))    # -> (64,8,8)
+        x = x.view(x.size(0), -1)                # Flatten to (B, 4096)
         x = F.relu(self.fc1(x))
         return self.fc2(x)

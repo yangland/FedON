@@ -4,10 +4,10 @@ from copy import deepcopy
 import math
 import logging
 from torch.utils.data import DataLoader
-    
+import torch.optim as optim    
     
 class FedOda:
-    def __init__(self, model_fn, device, pooled_loader, total_clients_num, 
+    def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
                  malicious_clients_num, E=5, scaling_factor=8,
                  reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
@@ -22,10 +22,11 @@ class FedOda:
         self.increase_factor = increase_factor
         self.threshold = threshold
         self.pooled_loader = pooled_loader
+        self.vali_loader = vali_loader
         self.total_clients_num = total_clients_num
         self.malicious_clients_num = malicious_clients_num
         self.current_s_m = None
-        self.inference_mode = 'sign'   # 'cos' or 'l2', 'sign'
+        self.inference_mode = 'l2'   # 'cos' or 'l2', 'sign', 'fixed'
         
         # State variables
         self.model0_sd = None
@@ -50,7 +51,7 @@ class FedOda:
         self.posterior_history = []
         self.history_s_m = []
 
-    def get_attack_direction(self, model, train_loader):
+    def get_attack_direction_old(self, model, train_loader):
         model = deepcopy(model).to(self.device) 
         model.train()
         loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
@@ -83,6 +84,80 @@ class FedOda:
         g_m_vec = torch.cat(grad_flattened)
         g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
         self.att_direction = g_m_unit
+        
+        return grads, g_m_unit
+
+    def get_attack_direction(self, model, train_loader, max_retries=50, initial_lr=0.001):
+        def contains_nan(tensor_list):
+            return any(param is not None and torch.isnan(param).any() for param in tensor_list)
+
+        model = deepcopy(model).to(self.device)
+        model.train()
+        loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
+
+        # Move model state to CPU to reduce GPU memory usage
+        original_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+        retry_count = 0
+        current_lr = initial_lr
+        optimizer = optim.SGD(model.parameters(), lr=current_lr)
+
+        while retry_count < max_retries:
+            retry_count += 1
+            # Restore model state to GPU
+            model.load_state_dict({k: v.to(self.device) for k, v in original_state.items()})
+            nan_detected = False
+
+            for inputs, labels in train_loader:
+                inputs, labels = inputs.to(self.device), labels.to(self.device)
+
+                optimizer.zero_grad()
+                outputs = model(inputs)
+                loss = loss_fn(outputs, labels)
+                loss.backward()
+
+                if contains_nan([p.grad for p in model.parameters()]):
+                    nan_detected = True
+                    break
+
+                optimizer.step()
+
+                if contains_nan([p.data for p in model.parameters()]):
+                    nan_detected = True
+                    break
+
+            if nan_detected:
+                current_lr *= 0.1
+                optimizer = optim.SGD(model.parameters(), lr=current_lr)
+                print(f"[Retry {retry_count}] NaN detected. Reducing lr to {current_lr} and restarting.")
+            else:
+                break
+
+        if retry_count == max_retries:
+            print("Maximum retries reached. Proceeding with last attempted state.")
+
+        # Compute parameter differences as gradients
+        grads = {}
+        final_state = model.state_dict()
+        for name in original_state:
+            final_tensor = final_state[name].cpu()
+            if torch.isnan(final_tensor).any():
+                print(f"Warning: NaN in parameter {name} after training. Using zero change.")
+                grads[name] = torch.zeros_like(original_state[name])
+            else:
+                grads[name] = final_tensor - original_state[name]
+
+        # Flatten
+        grad_flattened = [g.view(-1) for g in grads.values()]
+        g_m_vec = torch.cat(grad_flattened)
+        g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
+        self.att_direction = g_m_unit
+
+        # Restore original model state to GPU
+        model.load_state_dict({k: v.to(self.device) for k, v in original_state.items()})
+
+        grads = {k: v.to(self.device) for k, v in grads.items()}
+        g_m_unit = g_m_unit.to(self.device)
         
         return grads, g_m_unit
 
@@ -209,10 +284,10 @@ class FedOda:
 
             self.logger.info(
                 f"[FedOda] Iter t-{i}: "
-                f"L2²(Δs, Δb')={d0:.6f}, "
-                f"L2²(Δs, Δs')={d1:.6f}, "
-                f"L2²(Δs, Δm)={d2:.6f}, "
-                f"L2²(Δb', Δm)={d3:.6f}"
+                f"L2²(Δs, Δb')={d0:.4f}, "
+                f"L2²(Δs, Δs')={d1:.4f}, "
+                f"L2²(Δs, Δm)={d2:.4f}, "
+                f"L2²(Δb', Δm)={d3:.4f}"
             )
 
         # ✅ Variance estimation (from Δs - Δb')
@@ -301,6 +376,22 @@ class FedOda:
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
         return posterior
+
+    def log_cosine_similarities(self, delta_s, delta_b, delta_s_pred, delta_m):
+        # Calculate cosine distances
+        d1 = 1 - F.cosine_similarity(delta_s, delta_b, dim=0).item()
+        d2 = 1 - F.cosine_similarity(delta_s, delta_s_pred, dim=0).item()
+        d3 = 1 - F.cosine_similarity(delta_s, delta_m, dim=0).item()
+        d4 = 1 - F.cosine_similarity(delta_b, delta_m, dim=0).item()
+
+        # Log the cosine distances
+        self.logger.info(
+            f"[FedOda] cos_d(Δs, Δb')={d1:.4f}, "
+            f"cos_d(Δs, Δs')={d2:.4f}, "
+            f"cos_d(Δs, Δm)={d3:.4f}, "
+            f"cos_d(Δb', Δm)={d4:.4f}"
+        )
+        return d1, d2, d3, d4
 
 
     def sign_based_bayesian_inference(self, epsilon=1e-6):
@@ -454,53 +545,113 @@ class FedOda:
 
         return update, norm
 
+    def _evaluate_model(self, model):
+        """Helper function to evaluate model on validation set"""
+        model.eval()
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for data, target in self.vali_loader:
+                data, target = data.to(self.device), target.to(self.device)
+                output = model(data)
+                _, predicted = torch.max(output.data, 1)
+                total += target.size(0)
+                correct += (predicted == target).sum().item()
+        return 100 * correct / total
+
+
+    def _evaluate_malicious_update(self, malicious_update):
+        """
+        Evaluate the impact of a malicious update by applying it to the server model
+        and measuring validation accuracy.
         
+        Args:
+            malicious_update: The malicious update vector to evaluate
+            
+        Returns:
+            val_accuracy: Validation accuracy of the malicious model (0-100)
+        """
+        if self.vali_loader is None:
+            self.logger.warning("[FedOda] No validation loader provided - skipping evaluation")
+            return None
+        
+        # Create a copy of the server model
+        malicious_model = self.model_fn().to(self.device)
+        malicious_model.load_state_dict(self.server_model.state_dict())
+        
+        # Apply the malicious update
+        with torch.no_grad():
+            for param, update in zip(malicious_model.parameters(), malicious_update):
+                param.data += update
+        
+        # Evaluate the model
+        val_accuracy = self._evaluate_model(malicious_model)
+        
+        return val_accuracy
+
+
     def attack(self):
         if self.server_model is None:
             self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
             return None, None, None
 
-        # 🔁 First Iteration: No history
         if self.previous_server_model is None:
-            self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
+            return self._first_iteration_attack()
+        else:
+            return self._regular_attack()
 
-            # Step 1: Compute attack direction (g_m)
-            g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
 
-            # Step 2: Simulate benign update
-            benign_update_vec, benign_norm = self.simulate_benign_update(
-                loader=self.pooled_loader,
-                data_size=self.client_data_size,
-                batch_size=self.client_batch_size
-            )
-            self.epsilon = self.scaling_factor * benign_norm
-            self.logger.info(f"[FedOda] Simulated benign norm = {benign_norm:.4f}, ε = {self.epsilon:.4f}")
+    def _first_iteration_attack(self):
+        self.logger.info("[FedOda] First iteration detected. Performing special attack initialization.")
 
-            # Step 3: Apply attack
-            malicious_update = self.epsilon * g_m_vec
+        # [Previous steps 1-3 remain the same...]
+        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+        benign_update_vec, benign_norm = self.simulate_benign_update(
+            loader=self.pooled_loader,
+            data_size=self.client_data_size,
+            batch_size=self.client_batch_size
+        )
+        self.epsilon = self.scaling_factor * benign_norm
+        malicious_update = self.epsilon * g_m_vec
 
-            # Step 4: Convert to dict
-            malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
-            self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
+        # Evaluate the malicious update
+        val_accuracy = self._evaluate_malicious_update(malicious_update)
+        self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.2f}%")
+        
+        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+        self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
+        posterior = None
+        self.prev_s_m = self.current_s_m
+        return malicious_update_dict, malicious_update, posterior
 
-            # Posterior is undefined in first round
-            posterior = None
-            self.prev_s_m = self.current_s_m  # Prepare for next round
-            return malicious_update_dict, malicious_update, posterior
 
-        # 🔁 Regular FedOda Attack
+    def _regular_attack(self):
         self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
         g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
 
         self.logger.info("[FedOda] Step 2: Predicting benign update")
-        benign_update, benign_norm = self.simulate_benign_update(
+        benign_update, simulated_norm = self.simulate_benign_update(
             loader=self.pooled_loader,
             data_size=self.client_data_size,
             batch_size=self.client_batch_size
         )
 
+        # Calculate the average L2 norm from history
+        if self.history_server_updates:
+            l2_norms = [delta.norm().item() for delta in self.history_server_updates]
+            average_l2_norm = sum(l2_norms) / len(l2_norms)
+        else:
+            average_l2_norm = 0.0
+            self.logger.warning("[FedOda] No history available to compute average L2 norm. Defaulting to 0.")
+
+        benign_norm = average_l2_norm if average_l2_norm > 0 else simulated_norm
         self.epsilon = self.scaling_factor * benign_norm
         malicious_update = self.epsilon * g_m_vec
+        
+        # Evaluate the malicious update
+        val_accuracy = self._evaluate_malicious_update(malicious_update)
+        self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.2f}%")
+        
         self.logger.info(f"[FedOda] benign_norm = {benign_norm:.4f}, scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
 
         # ✅ Step 3–7: Analyze result of previous round (if selected)
@@ -519,16 +670,26 @@ class FedOda:
             self.logger.info("[FedOda] Step 5: Observing actual server update from previous round")
             delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
 
+            # Log the comparison on L2 
+            self.logger.info(f"[FedOda] Comparing norms: benign_norm from estimation = {benign_norm:.4f}, L2 norm of actual server update = {delta_s.norm().item():.4f}")
+
+
             self.logger.info("[FedOda] Step 6: Updating history")
             self.update_history(delta_s, benign_update, delta_s_pred, self.prev_s_m, malicious_update)
-
+            self.log_cosine_similarities(delta_s, benign_update, delta_s_pred, malicious_update)
+            
             self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
-            if self.inference_mode=='cos':
+            if self.inference_mode == 'fixed':
+                posterior = None  # No posterior calculation in fixed mode
+                self.logger.info("[FedOda] Fixed mode - maintaining constant scaling factor")
+            elif self.inference_mode == 'cos':
                 posterior = self.bayesian_inference_cosine()
-            elif self.inference_mode=='l2':
-                posterior = self.bayesian_inference_l2(d=len(malicious_update))
-            elif self.inference_mode=='sign':
-                posterior = self.sign_based_bayesian_inference()        
+            elif self.inference_mode == 'l2':
+                posterior = self.bayesian_inference_l2(d=len(malicious_update)) # works
+            elif self.inference_mode == 'sign':
+                posterior = self.sign_based_bayesian_inference()
+            else:
+                raise ValueError(f"Unknown inference mode: {self.inference_mode}")      
 
             # Store posterior in history
             if not hasattr(self, "posterior_history"):
@@ -537,17 +698,20 @@ class FedOda:
             if len(self.posterior_history) > self.E * 2:  # Keep more than E to filter later
                 self.posterior_history.pop(0)
 
-            # Adjust scaling factor based on valid posterior history
-            valid_posteriors = [p for p in self.posterior_history if p is not None]
-            if len(valid_posteriors) > 0:
-                use_E = min(self.E, len(valid_posteriors))
-                avg_posterior = sum(valid_posteriors[-use_E:]) / use_E
-                prev_factor = self.scaling_factor
-                self.scaling_factor = self.adjust_scaling_factor(prev_factor, avg_posterior)
-                self.logger.info(f"[FedOda] Avg posterior over last {use_E} = {avg_posterior:.4f}")
-                self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
+            # Only adjust scaling factor if not in fixed mode
+            if self.inference_mode != 'fixed':
+                valid_posteriors = [p for p in self.posterior_history if p is not None]
+                if len(valid_posteriors) > 0:
+                    use_E = min(self.E, len(valid_posteriors))
+                    avg_posterior = sum(valid_posteriors[-use_E:]) / use_E
+                    prev_factor = self.scaling_factor
+                    self.scaling_factor = self.adjust_scaling_factor(prev_factor, avg_posterior)
+                    self.logger.info(f"[FedOda] Avg posterior over last {use_E} = {avg_posterior:.4f}")
+                    self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
+                else:
+                    self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")
             else:
-                self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")
+                self.logger.info(f"[FedOda] Fixed mode - scaling factor remains at {self.scaling_factor:.4f}")
         else:
             self.logger.info("[FedOda] Malicious clients were not selected last round. Skipping inference.")
             posterior = None
@@ -569,8 +733,6 @@ class FedOda:
         self.prev_s_m = self.current_s_m
 
         return malicious_update_dict, malicious_update, posterior
-
-
 
 
 # Utility
