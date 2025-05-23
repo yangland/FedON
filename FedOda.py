@@ -25,7 +25,7 @@ class FedOda:
         self.total_clients_num = total_clients_num
         self.malicious_clients_num = malicious_clients_num
         self.current_s_m = None
-        self.use_cosine_inference = True   # Use cosine similarity for Bayesian inference
+        self.inference_mode = 'sign'   # 'cos' or 'l2', 'sign'
         
         # State variables
         self.model0_sd = None
@@ -303,6 +303,52 @@ class FedOda:
         return posterior
 
 
+    def sign_based_bayesian_inference(self, epsilon=1e-6):
+        E = len(self.history_server_updates)
+        if E == 0:
+            self.logger.warning("[FedOda] No history available for sign-based inference.")
+            return 0.5
+
+        delta_s = self.history_server_updates[-1]
+        delta_b = self.history_pred_benign_updates[-1]
+        delta_m = self.history_malicious_updates[-1]
+
+        sign_b = torch.sign(delta_b)
+        sign_m = torch.sign(delta_m)
+        sign_s = torch.sign(delta_s)
+
+        # Only consider conflicting coordinates (Δb ≠ Δm) and non-zero signs
+        conflict_mask = (sign_b != sign_m) & (sign_b != 0) & (sign_m != 0)
+
+        if conflict_mask.sum().item() == 0:
+            self.logger.warning("[FedOda] No conflicting coordinates found between benign and malicious signs.")
+            return 0.5
+
+        total_conflict = conflict_mask.sum().item()
+
+        agree_m = ((sign_s == sign_m) & conflict_mask).sum().item()
+        agree_b = ((sign_s == sign_b) & conflict_mask).sum().item()
+
+        agree_rate_m = agree_m / total_conflict
+        agree_rate_b = agree_b / total_conflict
+
+        log_likelihood_ratio = math.log((agree_rate_m + epsilon) / (agree_rate_b + epsilon))
+        posterior = 1 / (1 + math.exp(-log_likelihood_ratio))
+
+        self.logger.info(
+            f"[FedOda] Sign-based Bayesian Inference: "
+            f"total_dims={delta_s.numel()}, conflict={total_conflict} "
+            f"({total_conflict / delta_s.numel():.2f}%), "
+            f"agree_m={agree_m}, agree_b={agree_b}, "
+            f"rate_m={agree_rate_m:.4f}, rate_b={agree_rate_b:.4f}, "
+            f"log_likelihood_ratio={log_likelihood_ratio:.4f}, "
+            f"posterior={posterior:.4f}"
+        )
+
+        return posterior
+
+
+
     def adjust_epsilon(self, epsilon, posterior):
         if posterior < self.threshold:
             return epsilon * self.reduce_factor
@@ -332,7 +378,7 @@ class FedOda:
         self.logger.info(f"[FedOda] Avg posterior over last {len(self.posterior_history)} rounds = {avg_posterior:.4f}")
 
         # Stability margin around threshold
-        margin = 0.15
+        margin = 0.1
         lower = self.threshold - margin
         upper = self.threshold + margin
 
@@ -477,10 +523,12 @@ class FedOda:
             self.update_history(delta_s, benign_update, delta_s_pred, self.prev_s_m, malicious_update)
 
             self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
-            if self.use_cosine_inference:
+            if self.inference_mode=='cos':
                 posterior = self.bayesian_inference_cosine()
-            else:
+            elif self.inference_mode=='l2':
                 posterior = self.bayesian_inference_l2(d=len(malicious_update))
+            elif self.inference_mode=='sign':
+                posterior = self.sign_based_bayesian_inference()        
 
             # Store posterior in history
             if not hasattr(self, "posterior_history"):

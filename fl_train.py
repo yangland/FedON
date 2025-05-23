@@ -207,7 +207,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                       scaling_factor=8,
                       reduce_factor=0.9,
                       increase_factor=1.05,
-                      threshold=0.7,
+                      threshold=0.5,
                       client_learning_rate=c_lr,
                       client_data_size=mali_client_data_size,
                       client_batch_size=client_batch_size,
