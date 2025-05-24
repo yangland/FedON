@@ -12,6 +12,9 @@ from collections import OrderedDict
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.StreamHandler())
 
+
+
+
 def random_recolor(img, background, target_color, random_back=False, random_target=False, output_channel='L'):
 
     img = img.convert("L")

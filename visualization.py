@@ -5,6 +5,7 @@ import torch.nn.functional as F
 import torch
 from collections import Counter
 import matplotlib
+import os
 matplotlib.use('Agg')
 
 def same_label_lr_class_bars(iter, sensor_classifier, sensor_name, total_clients, class_num, save_dir, filename):
@@ -41,52 +42,6 @@ def same_label_lr_class_bars(iter, sensor_classifier, sensor_name, total_clients
     fig.savefig(f'{save_dir}/sensor_acc_{filename}.png')
     plt.close()
 
-# def dist_permutations(iter, sensor_classifier, sensor_name, total_clients, class_num, dist, save_dir, filename):
-#     dist_dict = {}
-#     for t_class in range(class_num):
-#         dist_matrix = np.array([[0]*total_clients]*total_clients)
-#         for i in range(total_clients):
-#             a_z = sensor_classifier[iter][i][t_class][sensor_name][2]
-#             for j in range(total_clients):
-#                 b_z = sensor_classifier[iter][j][t_class][sensor_name][2]
-#                 # dist_matrix[i][j] = float(torch.norm(torch.cdist(a_z, b_z, p=2)).cpu().detach())
-#                 # dist_matrix[i][j] = float(F.kl_div(a_z, b_z, reduction='sum').cpu().detach())
-#                 if dist == "l2-geo":
-#                     gm_1 = geometric_median(a_z)
-#                     gm_2 = geometric_median(b_z)
-#                     dist_matrix[i][j] = float(torch.norm(gm_1 - gm_2).cpu())
-#                 elif dist == "wasserstein":
-#                     sinkhorn = SinkhornDistance(eps=0.001, max_iter=500)
-#                     wass, P, C = sinkhorn(a_z, b_z)
-#                     # print("dist wasserstein", wass)
-#                     dist_matrix[i][j] = float(wass)
-                
-#         dist_dict[t_class] = dist_matrix
-        
-#         fig = plt.figure(figsize=(8, 5))
-#         ax = fig.add_subplot(111)
-#         cax = ax.matshow(dist_matrix, interpolation='nearest')
-#         fig.colorbar(cax)
-
-#         plt.xlabel("client ID") 
-#         plt.ylabel("client ID") 
-#         plt.title(f"Distance {dist}, Label {t_class}, {sensor_name} (iter {iter})") 
-#         plt.savefig(f'{save_dir}/dist_{filename}_label{t_class}.png')
-#         plt.close()
-#     return dist_dict
-
-
-# def matrix_plot(dist_matrix, title, filename, x_label, y_label, save_dir):
-#     fig = plt.figure(figsize=(8, 5))
-#     ax = fig.add_subplot(111)
-#     cax = ax.matshow(dist_matrix, interpolation='nearest')
-#     fig.colorbar(cax)
-
-#     plt.xlabel(x_label) 
-#     plt.ylabel(y_label) 
-#     plt.title(f"{title}") 
-#     plt.savefig(f'{save_dir}/{filename}.png')
-#     plt.close()    
     
 
 def matrix_plot(dist_matrix, title, filename, x_label, y_label, save_dir, client_ids):
@@ -143,27 +98,6 @@ def kl_bars(tt, ti, filename, save_dir):
     plt.savefig(f'{save_dir}/kld_bars_{filename}.png')
     plt.close()
 
-# def z_distances_comparison(a, b, c, y_label, filename, save_dir):
-#     gm = geometric_median(a)
-#     dist_a = []
-#     dist_b = []
-#     dist_c = []
-    
-#     for i in a:
-#         dist_a.append(euclidean(i,gm))
-#     for i in b:
-#         dist_b.append(euclidean(i,gm))
-#     for i in c:
-#         dist_c.append(euclidean(i,gm))
-        
-#     bins = np.linspace(min(min(dist_a), min(dist_b), min(dist_c)), max(max(dist_a), max(dist_b), max(dist_c)), 100)
-#     plt.hist(dist_a, bins, alpha=0.5, label='train')
-#     plt.hist(dist_b, bins, alpha=0.5, label='test')
-#     plt.hist(dist_c, bins, alpha=0.5, label='invert')
-#     plt.legend(loc='upper right')
-#     plt.title(f"Euclidean distance - label {y_label}: Geo of Train - train, test, invert") 
-#     plt.savefig(f'{save_dir}/z_comparison_{y_label}_{filename}.png')
-#     plt.close()
 
 def accuracy_bars(tt, ti, filename, save_dir): 
 
@@ -192,13 +126,37 @@ def plot_curve(data, name, filename, save_dir):
     plt.title(f"{name}")
     plt.savefig(f'{save_dir}/{name}_curve_{filename}.png')
     plt.close()
+
+
+def plot_multi_curves(data_dict, title, filename, save_dir):
+    """
+    Plot multiple curves in one figure.
+
+    Args:
+        data_dict (dict): Keys are labels, values are lists of data points.
+        title (str): Plot title.
+        filename (str): File name (no extension).
+        save_dir (str): Directory to save the plot.
+    """
+    plt.figure()
+    for label, values in data_dict.items():
+        if values is not None and any(v is not None for v in values):
+            plt.plot(values, label=label)
+
+    plt.title(title)
+    plt.xlabel("Iterations")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"{filename}.png"))
+    plt.close()
+
     
 
 def per_class_accuracy_plot(per_class_acc_vail_hist, filename, title, save_dir):
     iters = len(per_class_acc_vail_hist)
     class_ids = per_class_acc_vail_hist[0].keys()
     class_accuarcy = {class_id:[] for class_id in class_ids}
-    
     for iter in range(iters):
         for class_id, accu in per_class_acc_vail_hist[iter].items():
             class_accuarcy[class_id].append(accu)
@@ -215,7 +173,6 @@ def per_class_accuracy_plot(per_class_acc_vail_hist, filename, title, save_dir):
     plt.savefig(f'{save_dir}/{filename}_per_class_accuracy.png')
     plt.close()
   
-        
     
 def client_class_counts(selected_clients_per_class_hist, class_num, malicous_clients, malicous_classes):
     summary_dict = {key: [] for key in range(class_num)}

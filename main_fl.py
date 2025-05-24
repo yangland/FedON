@@ -8,7 +8,6 @@ from logging import FileHandler
 from logging import Formatter
 from utilities import timestamp
 import shutil
-from visualization import plot_curve, per_class_accuracy_plot
 from csv_logging import CsvLogging
 import torch
 
@@ -27,7 +26,6 @@ def main():
     fl_task = params['fl_task']
     defense = params['defense']
     aggr = params['aggr']
-    fl_class_num = params['fl_class_num']
     image_size = params['image_size']
     if_series = params['if_series']
     clients_eval_mode = params['clients_eval_mode']
@@ -102,41 +100,11 @@ def fl_w_visualization(train_data, test_data, params, image_size, exp_dir, fl_ta
         loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, \
         selected_clients_per_class_hist, self_eval_hist, attack_success_hist, fid = \
             fl_training(train_data, test_data, params, image_size, exp_dir, timestamp)
-
-        if params['noniid_type'] == 'label_skew':
-            non_iid_param = params['label_skew_alpha']
-        elif params['noniid_type'] == "p-degree":
-            non_iid_param = params['p-degree']
-
-
-        # plot the results
+        
         m_logger.info(f"loss_vail\n{loss_vail_hist}")
-        m_logger.info(f"acc_vail\n{acc_vail_hist}")
+        m_logger.info(f"ac vail\n{acc_vail_hist}")
         m_logger.info(f"attack_success_hist\n{attack_success_hist}")
-        
-        try:
-            plot_curve(loss_vail_hist, f"{fl_task}, vail loss, ({params['attack_method']}-{non_iid_param})", \
-                "vaid_loss", save_dir=f'{exp_dir}/plots')
-            
-            plot_curve(acc_vail_hist, f"{fl_task}, accuracy, ({params['attack_method']}-{non_iid_param})", \
-                "vaid_acc", save_dir=f'{exp_dir}/plots')
-            
-            per_class_accuracy_plot(per_class_acc_vail_hist, 
-                                    filename=fl_task + "_" + defense + "_" + aggr, 
-                                    title=f"{fl_task}, Per Class Validation Accuracy Rate ({params['attack_method']}-{non_iid_param})",
-                                    save_dir=f'{exp_dir}/plots')
-        
-        
-            per_class_accuracy_plot(attack_success_hist, 
-                                    filename=fl_task + "_" + defense + "_" + aggr + "_attack", 
-                                    title=f"{fl_task}, Per Class Attack Success Rate ({params['attack_method']}-{non_iid_param})",
-                                    save_dir=f'{exp_dir}/plots')
-            
-
-        except:
-            m_logger.info("plotting, error")
-        
-        
+           
         return loss_vail_hist[-1], acc_vail_hist[-1], per_class_acc_vail_hist[-1], attack_success_hist[-1], fid
 
 if __name__ == '__main__':

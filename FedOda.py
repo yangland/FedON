@@ -51,41 +51,63 @@ class FedOda:
         self.posterior_history = []
         self.history_s_m = []
 
-    def get_attack_direction_old(self, model, train_loader):
-        model = deepcopy(model).to(self.device) 
-        model.train()
-        loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
 
-        model.zero_grad()
-        for inputs, labels in train_loader:
-            inputs, labels = inputs.to(self.device), labels.to(self.device)
-            outputs = model(inputs)
-            loss = loss_fn(outputs, labels)
-            loss.backward()
-            break
+        # Full history for plotting/analysis
+        self.full_history = {
+            "s_b": [],
+            "s_hat": [],
+            "benign_norm": [],
+            "server_update_norm": [],
+            "cos_d1": [],
+            "cos_d2": [],
+            "cos_d3": [],
+            "cos_d4": [],
+            "l2_d1": [],
+            "l2_d2": [],
+            "l2_d3": [],
+            "l2_d4": [],
+            "mean_log_likelihood": [],
+            "posterior": [],
+            "scaling_factor": [],
+            "epsilon": []
+        }
 
-        grads = {}
-        model_sd = model.state_dict()
-        named_param_dict = dict(model.named_parameters())
 
-        for name in model_sd:
-            if name in named_param_dict:
-                param = named_param_dict[name]
-                if param.grad is not None:
-                    grads[name] = param.grad.detach().clone()
-                else:
-                    grads[name] = torch.zeros_like(param)
-            else:
-                # For buffers like running_mean, running_var: zero them out or skip
-                grads[name] = torch.zeros_like(model_sd[name])
+    # def get_attack_direction_old(self, model, train_loader):
+    #     model = deepcopy(model).to(self.device) 
+    #     model.train()
+    #     loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
 
-        # Flatten
-        grad_flattened = [g.view(-1) for g in grads.values()]
-        g_m_vec = torch.cat(grad_flattened)
-        g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
-        self.att_direction = g_m_unit
+    #     model.zero_grad()
+    #     for inputs, labels in train_loader:
+    #         inputs, labels = inputs.to(self.device), labels.to(self.device)
+    #         outputs = model(inputs)
+    #         loss = loss_fn(outputs, labels)
+    #         loss.backward()
+    #         break
+
+    #     grads = {}
+    #     model_sd = model.state_dict()
+    #     named_param_dict = dict(model.named_parameters())
+
+    #     for name in model_sd:
+    #         if name in named_param_dict:
+    #             param = named_param_dict[name]
+    #             if param.grad is not None:
+    #                 grads[name] = param.grad.detach().clone()
+    #             else:
+    #                 grads[name] = torch.zeros_like(param)
+    #         else:
+    #             # For buffers like running_mean, running_var: zero them out or skip
+    #             grads[name] = torch.zeros_like(model_sd[name])
+
+    #     # Flatten
+    #     grad_flattened = [g.view(-1) for g in grads.values()]
+    #     g_m_vec = torch.cat(grad_flattened)
+    #     g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
+    #     self.att_direction = g_m_unit
         
-        return grads, g_m_unit
+    #     return grads, g_m_unit
 
     def get_attack_direction(self, model, train_loader, max_retries=50, initial_lr=0.001):
         def contains_nan(tensor_list):
@@ -274,21 +296,13 @@ class FedOda:
             delta_s_pred = self.history_pred_server_updates[i]
             delta_m = self.history_malicious_updates[i]
 
-            d0 = (delta_s - delta_b).norm()**2           # ||Δs - Δb'||
-            d1 = (delta_s - delta_s_pred).norm()**2      # ||Δs - Δs'||
-            d2 = (delta_s - delta_m).norm()**2           # ||Δs - Δm||
-            d3 = (delta_b - delta_m).norm()**2           # ||Δb' - Δm||
-
+            # Replaced with log_l2_dist call
+            d0, d1, d2, d3 = self.log_l2_dist(delta_s, delta_b, delta_s_pred, delta_m)
+            
             d0_list.append(d0)
             d1_list.append(d1)
 
-            self.logger.info(
-                f"[FedOda] Iter t-{i}: "
-                f"L2²(Δs, Δb')={d0:.4f}, "
-                f"L2²(Δs, Δs')={d1:.4f}, "
-                f"L2²(Δs, Δm)={d2:.4f}, "
-                f"L2²(Δb', Δm)={d3:.4f}"
-            )
+            self.logger.info(f"[FedOda] Iter t-{i}")
 
         # ✅ Variance estimation (from Δs - Δb')
         if len(d0_list) > 1:
@@ -305,6 +319,7 @@ class FedOda:
 
         # Aggregate log-likelihoods
         ell_total = sum(log_likelihoods)
+        mean_log_likelihood = ell_total/len(log_likelihoods)
 
         # Clamp for numerical stability
         ell_total_clamped = max(min(ell_total, 80), -80)
@@ -314,7 +329,7 @@ class FedOda:
         self.logger.info(f"[FedOda] L2-based log-likelihood total = {ell_total:.4f} (clamped: {ell_total_clamped:.2f})")
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
-        return posterior
+        return posterior, mean_log_likelihood
 
 
     def bayesian_inference_cosine(self):
@@ -333,22 +348,13 @@ class FedOda:
             delta_s_pred = self.history_pred_server_updates[i]
             delta_m = self.history_malicious_updates[i]
 
-            d0 = 1 - F.cosine_similarity(delta_s, delta_b, dim=0).item()        # Δs vs Δb'
-            d1 = 1 - F.cosine_similarity(delta_s, delta_s_pred, dim=0).item()   # Δs vs Δs'
-            d2 = 1 - F.cosine_similarity(delta_s, delta_m, dim=0).item()        # Δs vs Δm
-            d3 = 1 - F.cosine_similarity(delta_b, delta_m, dim=0).item()        # Δb' vs Δm
-
-
+            # Replaced with log_cosine_dist call
+            d0, d1, d2, d3 = self.log_cos_dist(delta_s, delta_b, delta_s_pred, delta_m)
+            
             d0_list.append(d0)
             d1_list.append(d1)
 
-            self.logger.info(
-                f"[FedOda] Iter t-{i}: "
-                f"cos_d(Δs, Δb')={d0:.4f}, "
-                f"cos_d(Δs, Δs')={d1:.4f}, "
-                f"cos_d(Δs, Δm)={d2:.4f}, "
-                f"cos_d(Δb', Δm)={d3:.4f}"
-            )
+            self.logger.info(f"[FedOda] Iter t-{i}")
 
         # ✅ Fix variance computation
         if len(d0_list) > 1:
@@ -366,7 +372,8 @@ class FedOda:
 
         # Final aggregation
         ell_total = sum(log_likelihoods)
-
+        mean_log_likelihood = ell_total/len(log_likelihoods)
+        
         # Clamp to prevent overflow in exp
         ell_total_clamped = max(min(ell_total, 80), -80)
 
@@ -375,9 +382,9 @@ class FedOda:
         self.logger.info(f"[FedOda] Cosine-based log-likelihood total = {ell_total:.4f} (clamped: {ell_total_clamped:.2f})")
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
-        return posterior
+        return posterior, mean_log_likelihood
 
-    def log_cosine_similarities(self, delta_s, delta_b, delta_s_pred, delta_m):
+    def log_cos_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
         # Calculate cosine distances
         d1 = 1 - F.cosine_similarity(delta_s, delta_b, dim=0).item()
         d2 = 1 - F.cosine_similarity(delta_s, delta_s_pred, dim=0).item()
@@ -392,6 +399,23 @@ class FedOda:
             f"cos_d(Δb', Δm)={d4:.4f}"
         )
         return d1, d2, d3, d4
+
+
+    def log_l2_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
+        # Calculate L2 squared distances
+        d0 = (delta_s - delta_b).norm()**2           # ||Δs - Δb'||²
+        d1 = (delta_s - delta_s_pred).norm()**2      # ||Δs - Δs'||²
+        d2 = (delta_s - delta_m).norm()**2           # ||Δs - Δm||²
+        d3 = (delta_b - delta_m).norm()**2           # ||Δb' - Δm||²
+
+        # Log the L2 squared distances
+        self.logger.info(
+            f"[FedOda] L2²(Δs, Δb')={d0:.4f}, "
+            f"L2²(Δs, Δs')={d1:.4f}, "
+            f"L2²(Δs, Δm)={d2:.4f}, "
+            f"L2²(Δb', Δm)={d3:.4f}"
+        )
+        return d0, d1, d2, d3
 
 
     def sign_based_bayesian_inference(self, epsilon=1e-6):
@@ -621,6 +645,7 @@ class FedOda:
         malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
         self.logger.info(f"[FedOda] First-round attack completed. Returning malicious update.")
         posterior = None
+        # self.update_history(None, None, None, None, malicious_update)
         self.prev_s_m = self.current_s_m
         return malicious_update_dict, malicious_update, posterior
 
@@ -676,16 +701,23 @@ class FedOda:
 
             self.logger.info("[FedOda] Step 6: Updating history")
             self.update_history(delta_s, benign_update, delta_s_pred, self.prev_s_m, malicious_update)
-            self.log_cosine_similarities(delta_s, benign_update, delta_s_pred, malicious_update)
+            cos_d1, cos_d2, cos_d3, cos_d4 = self.log_cos_dist(delta_s, 
+                                                                benign_update,
+                                                                delta_s_pred, 
+                                                                malicious_update)
+            l2_d1, l2_d2, l2_d3, l2_d4 = self.log_cos_dist(delta_s, 
+                                                                benign_update,
+                                                                delta_s_pred, 
+                                                                malicious_update)
             
             self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
             if self.inference_mode == 'fixed':
                 posterior = None  # No posterior calculation in fixed mode
                 self.logger.info("[FedOda] Fixed mode - maintaining constant scaling factor")
             elif self.inference_mode == 'cos':
-                posterior = self.bayesian_inference_cosine()
+                posterior, mean_log_likelihood = self.bayesian_inference_cosine()
             elif self.inference_mode == 'l2':
-                posterior = self.bayesian_inference_l2(d=len(malicious_update)) # works
+                posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update)) # works
             elif self.inference_mode == 'sign':
                 posterior = self.sign_based_bayesian_inference()
             else:
@@ -697,6 +729,17 @@ class FedOda:
             self.posterior_history.append(posterior)
             if len(self.posterior_history) > self.E * 2:  # Keep more than E to filter later
                 self.posterior_history.pop(0)
+
+            self.log_to_full_history(
+                    s_b=s_b,
+                    s_hat=s_hat,
+                    benign_norm=benign_norm,
+                    server_update_norm=delta_s.norm().item(),
+                    cos_d1=cos_d1, cos_d2=cos_d2, cos_d3=cos_d3, cos_d4=cos_d4,
+                    l2_d1=l2_d1, l2_d2=l2_d2, l2_d3=l2_d3, l2_d4=l2_d4,
+                    l=mean_log_likelihood if self.inference_mode == "l2" else None,
+                    posterior=posterior
+                    )
 
             # Only adjust scaling factor if not in fixed mode
             if self.inference_mode != 'fixed':
@@ -733,6 +776,43 @@ class FedOda:
         self.prev_s_m = self.current_s_m
 
         return malicious_update_dict, malicious_update, posterior
+
+
+    def log_to_full_history(self, *, s_b=None, s_hat=None,
+                            benign_norm=None, server_update_norm=None,
+                            cos_d1=None, cos_d2=None, cos_d3=None, cos_d4=None,
+                            l2_d1=None, l2_d2=None, l2_d3=None, l2_d4=None,
+                            l=None, posterior=None):
+        """
+        Logs a single iteration's key metrics to self.full_history.
+        """
+
+        if not hasattr(self, "full_history"):
+            self.full_history = {
+                "s_b": [], "s_hat": [],
+                "benign_norm": [], "server_update_norm": [],
+                "cos_d1": [], "cos_d2": [], "cos_d3": [], "cos_d4": [],
+                "l2_d1": [], "l2_d2": [], "l2_d3": [], "l2_d4": [],
+                "mean_log_likelihood": [], "posterior": [],
+                "scaling_factor": [], "epsilon": []
+            }
+
+        self.full_history["s_b"].append(s_b)
+        self.full_history["s_hat"].append(s_hat)
+        self.full_history["benign_norm"].append(benign_norm)
+        self.full_history["server_update_norm"].append(server_update_norm)
+        self.full_history["cos_d1"].append(cos_d1)
+        self.full_history["cos_d2"].append(cos_d2)
+        self.full_history["cos_d3"].append(cos_d3)
+        self.full_history["cos_d4"].append(cos_d4)
+        self.full_history["l2_d1"].append(l2_d1)
+        self.full_history["l2_d2"].append(l2_d2)
+        self.full_history["l2_d3"].append(l2_d3)
+        self.full_history["l2_d4"].append(l2_d4)        
+        self.full_history["mean_log_likelihood"].append(l)
+        self.full_history["posterior"].append(posterior)
+        self.full_history["scaling_factor"].append(self.scaling_factor)
+        self.full_history["epsilon"].append(self.epsilon)
 
 
 # Utility

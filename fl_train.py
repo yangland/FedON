@@ -29,7 +29,7 @@ from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 import statistics
 from FedOda import FedOda, flatten_model
-
+from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves
 logger = logging.getLogger("individual_logging")
 
 def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
@@ -61,7 +61,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     except:
         dirichlet_alpha = None
         
-        
     attack_method = params['attack_method']
     
     if malicious_num == 0 or attack_method == 'none':
@@ -88,10 +87,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
     fltrust_root_iid = params['fltrust_root_iid']
     dba_poisoning_per_batch = params.get('dba_poisoning_per_batch', 0.2)
-    
     client_list = list(range(client_num))
-    class_list = list(range(fl_class_num))
-
 
     try:
         os.makedirs(exp_dir)
@@ -158,7 +154,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         logger.info(f"Benign client(s) label counts: {sorted(beni_label_count.items())}")
         
         class_dominance = True
-
         try:
             for class_id in list(mali_label_count.keys()):
                 if beni_label_count[class_id] <= mali_label_count[class_id]:
@@ -192,13 +187,16 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         label_distribution = count_labels(pooled_data)
         logger.info(f"pooled dataset label distribution: {label_distribution}")
         
-        # pretrain the model to get attack direction
-        model_fn = partial(get_model(c_model_name), num_classes=fl_class_num, dataset=params['fl_task'])    
+        # pooled dataset from all malicious clients
+        model_fn = partial(get_model(c_model_name), 
+                           num_classes=fl_class_num,
+                           dataset=params['fl_task'])    
         
         pooled_dataset = ConcatDataset(pooled_data)
         pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True)
         original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=5)
         
+        # object for FedOda class
         foda = FedOda(model_fn=model_fn, 
                       device=device,
                       pooled_loader=pooled_loader,
@@ -233,7 +231,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     per_class_acc_vail_hist = []
     selected_clients_per_class_hist = []
     attack_success_hist = []
-    mistake_hist = []
 
     # create plot dir
     plot_dir=f"{exp_dir}/plots"
@@ -244,7 +241,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     img_dir=f"{exp_dir}/g_model_images"
     if not os.path.exists(img_dir):
         os.makedirs(img_dir)
-    
 
     # create models 
     mco_dict = create_fl_models(client_num, device, c_model_name,  c_lr, server_optim_c_lr, c_momentum,
@@ -283,14 +279,14 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if server_delta > 1e-6:
             logger.warning(f"[Warning] Server model was modified before aggregation! ||Δ|| = {server_delta:.6f}")
 
-        
-        
         if defense == 'AGGR':
             if aggr == 'fedavg':
                 c_grad = fedavg(c_grad_dict)
             elif aggr == 'geometric_median':
-                c_grad, client_weights = geo_med_aggr(c_grad_dict, device)
-                c_weights_csv.append_save_csv([iter] + list(dict(sorted(client_weights.items())).values()))
+                c_grad, geo_weights = geo_med_aggr(c_grad_dict, device)
+                c_weights_csv.append_save_csv(
+                        [iter] + [v.item() for k, v in sorted(geo_weights.items())]
+                    )
             elif aggr == 'coordinate_wise_median':
                 c_grad = coordinate_wise_median(c_grad_dict)
             elif aggr == 'trimmed_mean':
@@ -341,7 +337,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 # weighted average of grad
                 fltrust_weights_list = [a*b for a,b in zip(trust_score_list, clip_value_list)]
                 fltrust_weights = dict(zip(client_selection, fltrust_weights_list))
-                c_weights_csv.append_save_csv([iter] + list(dict(sorted(fltrust_weights.items())).values()))
+                c_weights_csv.append_save_csv(
+                        [iter] + [v.item() for k, v in sorted(fltrust_weights.items())]
+                    )
                 c_grad = grad_weighted_sum(c_grad_dict, fltrust_weights)
             
             
@@ -390,11 +388,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 if foda_posterior==None: 
                     foda_posterior = 0
                 logger.info(f"[FedOda] iter {iter}: mistake_rate = {mistake_rate:.4f}, posterior = {foda_posterior:.4f}")
-
-
-        
-        e = int((time.time()-t1)/(iter+1) *
-                (fl_iter_num - iter))
+     
+        e = int((time.time()-t1)/(iter+1) * (fl_iter_num - iter))
         print("Remaining Time (approx.):", '{:02d}:{:02d}:{:02d}'.format(e // 3600, (e % 3600 // 60), e % 60),
                 "[{:.2f}%]\n".format(iter / fl_iter_num * 100))
         print("Elapsed Time this round:", "{:.2f} sec".format(time.time() - t1))
@@ -409,8 +404,174 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
 
     logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
+    logger.info(f"Experiment directory: {exp_dir}")
     logger.handlers.clear()
     
+    # Extract FedOda attack metrics (if applicable)
+    fedoda_metrics = sanitize_attack_metrics(foda.full_history)
+
+    print("fedoda_metrics", fedoda_metrics)
+    
+    plot_fl_results(params, exp_dir, 
+                    loss_vail_hist, 
+                    acc_vail_hist, 
+                    per_class_acc_vail_hist, 
+                    attack_success_hist,
+                    fedoda_metrics)
+
     return loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, \
         selected_clients_per_class_hist, clients_eval_hist, attack_success_hist, fid_avg
 
+
+def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist,
+                    per_class_acc_vail_hist, attack_success_hist, fedoda_metrics=None):
+    try:
+        # Determine non-IID parameter
+        if params['noniid_type'] == 'label_skew':
+            non_iid_param = params['label_skew_alpha']
+        elif params['noniid_type'] == "p-degree":
+            non_iid_param = params['p-degree']
+        elif params['noniid_type'] == "dirichlet":
+            non_iid_param = params['dirichlet_alpha']
+        else:
+            logger.info("Unknown noniid_type")
+            non_iid_param = "unknown"
+
+        fl_task = params['fl_task']
+        defense = params['defense']
+        aggr = params['aggr']
+        attack_method = params['attack_method']
+
+        # Ensure plots directory exists
+        plots_dir = os.path.join(exp_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+
+        plot_curve(
+            loss_vail_hist,
+            f"{fl_task}, vail loss, ({attack_method}-{non_iid_param})",
+            "vaid_loss",
+            save_dir=plots_dir
+        )
+
+        plot_curve(
+            acc_vail_hist,
+            f"{fl_task}, accuracy, ({attack_method}-{non_iid_param})",
+            "vaid_acc",
+            save_dir=plots_dir
+        )
+
+        per_class_accuracy_plot(
+            per_class_acc_vail_hist,
+            filename=f"{fl_task}_{defense}_{aggr}_accuracy",
+            title=f"{fl_task}, Per Class Validation Accuracy Rate ({attack_method}-{non_iid_param})",
+            save_dir=plots_dir
+        )
+
+        per_class_accuracy_plot(
+            attack_success_hist,
+            filename=f"{fl_task}_{defense}_{aggr}_attack",
+            title=f"{fl_task}, Per Class Attack Success Rate ({attack_method}-{non_iid_param})",
+            save_dir=plots_dir
+        )
+
+        # --- Plot full history from FedOda ---
+        if fedoda_metrics:
+            def try_get(key): return fedoda_metrics.get(key, [])
+
+            # Group 1: s_b and s_hat
+            plot_multi_curves(
+                {
+                    "s_b (estimated benign clients)": try_get("s_b"),
+                    "s_hat (estimated total clients)": try_get("s_hat")
+                },
+                title="Estimated Client Selection",
+                filename="clients_estimation",
+                save_dir=plots_dir
+            )
+
+            # Group 2: benign_norm and server_update_norm
+            plot_multi_curves(
+                {
+                    "benign_norm": try_get("benign_norm"),
+                    "server_update_norm": try_get("server_update_norm")
+                },
+                title="Norms: Benign vs Server Update",
+                filename="norm_comparison",
+                save_dir=plots_dir
+            )
+
+            # Group 3: Cosine distances
+            plot_multi_curves(
+                {
+                    "cos_d(Δs, Δb')": try_get("cos_d1"),
+                    "cos_d(Δs, Δs')": try_get("cos_d2"),
+                    "cos_d(Δs, Δm)": try_get("cos_d3"),
+                    "cos_d(Δb', Δm)": try_get("cos_d4"),
+                },
+                title="Cosine Distances",
+                filename="cosine_distances",
+                save_dir=plots_dir
+            )
+
+            # Group 4: L2 distances
+            plot_multi_curves(
+                {
+                    "L2(Δs, Δb')": try_get("l2_d1"),
+                    "L2(Δs, Δs')": try_get("l2_d2"),
+                    "L2(Δs, Δm)": try_get("l2_d3"),
+                    "L2(Δb', Δm)": try_get("l2_d4"),
+                },
+                title="L2 Distances",
+                filename="l2_distances",
+                save_dir=plots_dir
+            )
+
+            # Group 5: mean log-likelihood and posterior
+            plot_multi_curves(
+                {
+                    "Mean Log-Likelihood": try_get("mean_log_likelihood"),
+                    "Posterior P(H1|D)": try_get("posterior")
+                },
+                title="Bayesian Inference Metrics",
+                filename="bayesian_inference",
+                save_dir=plots_dir
+            )
+
+            # Group 6: Scaling factor, epsilon, benign_norm
+            plot_multi_curves(
+                {
+                    "Scaling Factor": try_get("scaling_factor"),
+                    "Epsilon": try_get("epsilon"),
+                    "Benign Norm": try_get("benign_norm")
+                },
+                title="Attack Power Parameters",
+                filename="attack_parameters",
+                save_dir=plots_dir
+            )
+
+
+
+    except Exception as e:
+        logger.info(f"Plotting error: {e}")
+
+
+def sanitize_attack_metrics(metrics_dict):
+    """
+    Convert all tensor values in attack metrics to float for plotting.
+    Handles lists of tensors and nested data correctly.
+    """
+    sanitized = {}
+    for key, values in metrics_dict.items():
+        new_values = []
+        for v in values:
+            if isinstance(v, torch.Tensor):
+                new_values.append(v.detach().cpu().item())
+            elif isinstance(v, (float, int)) or v is None:
+                new_values.append(v)
+            else:
+                try:
+                    new_values.append(float(v))
+                except Exception:
+                    new_values.append(None)  # fallback
+        sanitized[key] = new_values
+    return sanitized
