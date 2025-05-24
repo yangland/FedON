@@ -1,12 +1,12 @@
-cuda_device: 7
+cuda_device: 0
 if_series: False
 
 # defense methods
-defense: "FedEval" # "AGGR", "FedEval"
-# "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum"
-aggr: "none"
-aggr_c_lr: 0.5
-aggr_g_lr: 1.0
+defense: "AGGR" # "AGGR", "FedEval"
+# "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
+aggr: "coordinate_wise_median" # "multi-krum", "fedavg", "fltrust"
+aggr_c_lr: 1 # 0.75
+aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
 
 # sensors
@@ -16,56 +16,38 @@ master_sensor: "none" # "CLIP", "FID", "none"
 sensor_embed_dim: 256
 
 # fl client
-n: 3 # total clients 
-m: 1 # malicious clients
-clients_per_iter: 3
+n: 100 # total clients 
+m: 20 # malicious clients
+clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'imagenette'
-c_model: "Cifar10_18L"
-g_model: "ContextUnet"
-ddmp_seq: 16 # 7 for 28*28, 8 for 32*32
-noniid_type: "label_skew" # "p-degree", "label_skew"
-label_skew_alpha: 1 # if certain classes missing 0.5, 0.7, 1
-p-degree: 0.5
-# '2_label_flipping', 'fakedata', 'backdoor', 'opposite_colour', 
-# 'reverse_grad', 'label_perturbation'ion', 'LIE', 'fang', 'none'
-attack_method: 'label_perturbation'
-# only for reverse_grad, backdoor 
-attack_magnitude: 5
+c_model: "SqueezeNet" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet"
+ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
+noniid_type: 'dirichlet' # "p-degree", "label_skew"
+dirichlet_alpha: 0.5
+# '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
+# 'clear_label_backdoor', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'dba', 'FedOda']
+attack_method: 'FedOda'
 
-image_size: [3, 64, 64]
-c_epochs: 2 # 2, 5, 10
+
+image_size: [3, 224, 224]
+c_epochs: 1 # 2, 5, 10
 c_lr: 0.01
 c_momentum: 0.9
 client_batch_size: 64
 
-g_epochs: 4 # 5, 10
-g_lr: 1e-4
-# g_batch_size: 256
-g_in_channels: 3 # 3 for svhn, 1 for mnist
-g_n_feat: 128
-unet_classes: 10
-g_n_T: 400
-g_ws_final: 0.5 # 0.5
-g_drop_prob: 0.1
-g_betas: [1e-4, 0.02]
-g_sample_each_class: 5
-
 fl_iter_num: 10
 server_optim_c_lr: 0.005
-server_batch_size: 32
-server_c_epochs: 4
-server_g_epochs: 8
+server_batch_size: 64
+server_c_epochs: 1
+server_g_epochs: 1
 
+# FedOda parameters
+fedoda:
+  E: 5
+  scaling_factor: 8
+  reduce_factor: 0.9
+  increase_factor: 1.05
+  threshold: 0.6
 
-
-# visualization
-dist_type: "wasserstein" # "l2-geo", "wasserstein"
-iter_start_gen: 0
-
-
-# sensor detection
-clients_eval_mode: "cross-eval" # "self-eval", "cross-eval", "no-eval"
-train_datasize_per_label: 500
-init_c_epochs: 6
-init_g_epochs: 12
+clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
