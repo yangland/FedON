@@ -151,7 +151,66 @@ def plot_multi_curves(data_dict, title, filename, save_dir):
     plt.savefig(os.path.join(save_dir, f"{filename}.png"))
     plt.close()
 
+def plot_twin_curves(data_dict, title, filename, save_dir):
+    """
+    Plot multiple curves with dual y-axes if needed.
+
+    Args:
+        data_dict (dict): Keys are labels, values are lists of data points.
+        title (str): Plot title.
+        filename (str): File name (no extension).
+        save_dir (str): Directory to save the plot.
+    """
+    if len(data_dict) != 2:
+        raise ValueError("This function currently only supports exactly 2 curves for dual y-axes plotting")
     
+    # Create a larger figure (wider)
+    fig, ax1 = plt.subplots(figsize=(12, 6))  # Width=12, Height=6
+    
+    # Get the two items from the dictionary
+    items = list(data_dict.items())
+    label1, values1 = items[0]
+    label2, values2 = items[1]
+    
+    # Plot first curve
+    if values1 is not None and any(v is not None for v in values1):
+        color = 'tab:red'
+        ax1.set_xlabel("Iterations")
+        ax1.set_ylabel(label1, color=color)
+        ax1.plot(values1, color=color, label=label1)
+        ax1.tick_params(axis='y', labelcolor=color)
+    
+    # Create second y-axis
+    ax2 = ax1.twinx()
+    
+    # Plot second curve
+    if values2 is not None and any(v is not None for v in values2):
+        color = 'tab:blue'
+        ax2.set_ylabel(label2, color=color)
+        ax2.plot(values2, color=color, label=label2)
+        ax2.tick_params(axis='y', labelcolor=color)
+    
+    # Add title and grid
+    plt.title(title)
+    ax1.grid(True)
+    
+    # Combine legends from both axes
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    
+    # Add legend in the best location
+    ax1.legend(lines1 + lines2, labels1 + labels2, 
+              loc='best', 
+              framealpha=1.0)
+    
+    # Adjust layout with padding
+    plt.tight_layout(pad=2.0)  # Add extra padding around the plot
+    
+    # Save with tight bounding box
+    plt.savefig(os.path.join(save_dir, f"{filename}.png"), 
+                bbox_inches='tight', 
+                dpi=300)  # Higher quality
+    plt.close()
 
 def per_class_accuracy_plot(per_class_acc_vail_hist, filename, title, save_dir):
     iters = len(per_class_acc_vail_hist)

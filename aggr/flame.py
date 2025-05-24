@@ -68,8 +68,19 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
     # logger.info(f"cos_M: {np.array(cos_list)}")
     
     # plot the cosine similarity matrix
-    matrix_plot(np.array(cos_list), f"cos_M{iter}", f"cos_M_{iter}", "client_id", "client_id",
-                        f"{exp_dir}/plots", client_ids=client_ids)
+    # Create the directory if it doesn't exist
+    os.makedirs(f"{exp_dir}/plots/flame_cos", exist_ok=True)
+
+    # Plot the cosine similarity matrix
+    matrix_plot(
+        np.array(cos_list), 
+        f"cos_M{iter}", 
+        f"cos_M_{iter}", 
+        "client_id", 
+        "client_id",
+        f"{exp_dir}/plots/flame_cos", 
+        client_ids=client_ids
+    )
     
     
     clusterer = hdbscan.HDBSCAN(min_cluster_size=num_clients//2 + 1,min_samples=1,allow_single_cluster=True).fit(cos_list)

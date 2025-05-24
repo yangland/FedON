@@ -242,7 +242,10 @@ class FedOda:
             s_b (float): Estimated number of benign clients selected.
             s_hat (float): Estimated total number of selected clients per round.
         """
+        self.history_s_m.append(current_s_m)
         history_len = len(self.history_s_m)
+        self.logger.info(f"self.history_s_m len: {history_len}")
+        
         if history_len == 0:
             # Fallback: assume uniform selection
             avg_s_m = current_s_m
@@ -280,14 +283,23 @@ class FedOda:
             self.history_malicious_selection.pop(0)
 
 
-    def bayesian_inference_l2(self, d):
+    def bayesian_inference_l2(self, d, use_average=True):
+        """
+        Perform Bayesian inference using L2 distances, with an option to use either
+        the average over all history or just the most recent iteration.
+
+        :param d: Dimensionality of the parameter space.
+        :param use_average: Boolean indicating whether to use the average of all iterations (True) or just the most recent one (False).
+        :return: Posterior probability and the mean log likelihood if applicable.
+        """
         E = len(self.history_server_updates)
         if E == 0:
             self.logger.warning("[FedOda] No history found for Bayesian inference. Returning neutral posterior.")
-            return 0.5
+            return 0.5, None
 
         d0_list = []
         d1_list = []
+        posteriors = []
         log_likelihoods = []
 
         for i in range(E):
@@ -296,40 +308,51 @@ class FedOda:
             delta_s_pred = self.history_pred_server_updates[i]
             delta_m = self.history_malicious_updates[i]
 
-            # Replaced with log_l2_dist call
-            d0, d1, d2, d3 = self.log_l2_dist(delta_s, delta_b, delta_s_pred, delta_m)
+            # Calculate L2 distances
+            d0, d1, d2, d3 = self.get_l2_dist(delta_s, delta_b, delta_s_pred, delta_m)
+            
+            # Log the L2 squared distances
+            self.logger.info(
+                f"[FedOda] Iter t-{i}, "
+                f"L2²(Δs, Δb')={d0:.4f}, "
+                f"L2²(Δs, Δs')={d1:.4f}, "
+                f"L2²(Δs, Δm)={d2:.4f}, "
+                f"L2²(Δb', Δm)={d3:.4f}"
+            )
             
             d0_list.append(d0)
             d1_list.append(d1)
 
-            self.logger.info(f"[FedOda] Iter t-{i}")
+            # Compute variance estimate
+            if len(d0_list) > 1:
+                sigma2 = sum(d0_list) / (d * len(d0_list))
+            else:
+                sigma2 = 1e-4
 
-        # ✅ Variance estimation (from Δs - Δb')
-        if len(d0_list) > 1:
-            sigma2 = sum(d0_list) / (d * len(d0_list))  # Empirical variance estimate
-        else:
-            sigma2 = 1e-4  # fallback for E == 1
+            sigma2 = max(sigma2, 1e-4)
 
-        sigma2 = max(sigma2, 1e-4)  # Ensure non-zero
-        self.logger.info(f"[FedOda] Estimated σ² = {sigma2:.6f}")
-
-        for d0, d1 in zip(d0_list, d1_list):
+            # Calculate log-likelihood for current iteration
             l = (d0 - d1) / (2 * sigma2)
             log_likelihoods.append(l)
 
-        # Aggregate log-likelihoods
-        ell_total = sum(log_likelihoods)
-        mean_log_likelihood = ell_total/len(log_likelihoods)
+            # Compute posterior for the current iteration
+            ell_clamped = max(min(l, 80), -80)
+            posterior = 1 / (1 + math.exp(-ell_clamped))
+            posteriors.append(posterior)
 
-        # Clamp for numerical stability
-        ell_total_clamped = max(min(ell_total, 80), -80)
+            self.logger.info(f"[FedOda] Iteration {i} log-likelihood = {l:.4f} (clamped: {ell_clamped:.2f}), Posterior P(H1|D) = {posterior:.4f}")
 
-        posterior = 1 / (1 + math.exp(-ell_total_clamped))
+        if use_average:
+            # Use the average posterior of the iterations
+            avg_posterior = sum(posteriors) / len(posteriors)
+            self.logger.info(f"[FedOda] Average Posterior P(H1|D) = {avg_posterior:.4f}")
+            return avg_posterior, sum(log_likelihoods) / len(log_likelihoods)
+        else:
+            # Use only the most recent iteration's posterior
+            recent_posterior = posteriors[-1]
+            self.logger.info(f"[FedOda] Using Recent Posterior P(H1|D) = {recent_posterior:.4f}")
+            return recent_posterior, log_likelihoods[-1]
 
-        self.logger.info(f"[FedOda] L2-based log-likelihood total = {ell_total:.4f} (clamped: {ell_total_clamped:.2f})")
-        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
-
-        return posterior, mean_log_likelihood
 
 
     def bayesian_inference_cosine(self):
@@ -349,7 +372,7 @@ class FedOda:
             delta_m = self.history_malicious_updates[i]
 
             # Replaced with log_cosine_dist call
-            d0, d1, d2, d3 = self.log_cos_dist(delta_s, delta_b, delta_s_pred, delta_m)
+            d0, d1, d2, d3 = self.get_cos_dist(delta_s, delta_b, delta_s_pred, delta_m)
             
             d0_list.append(d0)
             d1_list.append(d1)
@@ -384,37 +407,23 @@ class FedOda:
 
         return posterior, mean_log_likelihood
 
-    def log_cos_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
+    def get_cos_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
         # Calculate cosine distances
         d1 = 1 - F.cosine_similarity(delta_s, delta_b, dim=0).item()
         d2 = 1 - F.cosine_similarity(delta_s, delta_s_pred, dim=0).item()
         d3 = 1 - F.cosine_similarity(delta_s, delta_m, dim=0).item()
         d4 = 1 - F.cosine_similarity(delta_b, delta_m, dim=0).item()
 
-        # Log the cosine distances
-        self.logger.info(
-            f"[FedOda] cos_d(Δs, Δb')={d1:.4f}, "
-            f"cos_d(Δs, Δs')={d2:.4f}, "
-            f"cos_d(Δs, Δm)={d3:.4f}, "
-            f"cos_d(Δb', Δm)={d4:.4f}"
-        )
         return d1, d2, d3, d4
 
 
-    def log_l2_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
+    def get_l2_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
         # Calculate L2 squared distances
         d0 = (delta_s - delta_b).norm()**2           # ||Δs - Δb'||²
         d1 = (delta_s - delta_s_pred).norm()**2      # ||Δs - Δs'||²
         d2 = (delta_s - delta_m).norm()**2           # ||Δs - Δm||²
         d3 = (delta_b - delta_m).norm()**2           # ||Δb' - Δm||²
 
-        # Log the L2 squared distances
-        self.logger.info(
-            f"[FedOda] L2²(Δs, Δb')={d0:.4f}, "
-            f"L2²(Δs, Δs')={d1:.4f}, "
-            f"L2²(Δs, Δm)={d2:.4f}, "
-            f"L2²(Δb', Δm)={d3:.4f}"
-        )
         return d0, d1, d2, d3
 
 
@@ -471,7 +480,7 @@ class FedOda:
             return epsilon * self.increase_factor
 
 
-    def adjust_scaling_factor(self, scaling_factor, posterior):
+    def adjust_scaling_factor(self, scaling_factor):
         """
         Adjusts the scaling factor based on the history of posterior probabilities.
         Keeps it stable if posterior is close to the threshold.
@@ -480,16 +489,16 @@ class FedOda:
             float: Updated and clamped scaling factor.
         """
         # Save posterior history
-        if not hasattr(self, "posterior_history"):
-            self.posterior_history = []
-        self.posterior_history.append(posterior)
-        if len(self.posterior_history) > self.E:
-            self.posterior_history.pop(0)
+        # if not hasattr(self, "posterior_history"):
+        #     self.posterior_history = []
+        # self.posterior_history.append(last_posterior)
+        # if len(self.posterior_history) > self.E:
+        #     self.posterior_history.pop(0)
 
         # Compute average posterior over last E rounds
         avg_posterior = sum(self.posterior_history) / len(self.posterior_history)
         
-        self.logger.info(f"[FedOda] Posterior history: {self.posterior_history}")
+        self.logger.info(f"[FedOda] Posterior history: {[f'{x:.4f}' for x in self.posterior_history]}")
         self.logger.info(f"[FedOda] Avg posterior over last {len(self.posterior_history)} rounds = {avg_posterior:.4f}")
 
         # Stability margin around threshold
@@ -701,14 +710,32 @@ class FedOda:
 
             self.logger.info("[FedOda] Step 6: Updating history")
             self.update_history(delta_s, benign_update, delta_s_pred, self.prev_s_m, malicious_update)
-            cos_d1, cos_d2, cos_d3, cos_d4 = self.log_cos_dist(delta_s, 
+            cos_d1, cos_d2, cos_d3, cos_d4 = self.get_cos_dist(delta_s, 
                                                                 benign_update,
                                                                 delta_s_pred, 
                                                                 malicious_update)
-            l2_d1, l2_d2, l2_d3, l2_d4 = self.log_cos_dist(delta_s, 
-                                                                benign_update,
-                                                                delta_s_pred, 
-                                                                malicious_update)
+            # Log the cosine distances
+            self.logger.info(
+                f"[FedOda] cos_d(Δs, Δb')={cos_d1:.4f}, "
+                f"cos_d(Δs, Δs')={cos_d2:.4f}, "
+                f"cos_d(Δs, Δm)={cos_d3:.4f}, "
+                f"cos_d(Δb', Δm)={cos_d4:.4f}"
+            )
+            
+            l2_d1, l2_d2, l2_d3, l2_d4 = self.get_l2_dist(delta_s, 
+                                                            benign_update,
+                                                            delta_s_pred, 
+                                                            malicious_update)
+ 
+             # Log the L2 squared distances
+            self.logger.info(
+                f"[FedOda] " 
+                f"L2²(Δs, Δb')={l2_d1:.4f}, "
+                f"L2²(Δs, Δs')={l2_d2:.4f}, "
+                f"L2²(Δs, Δm)={l2_d3:.4f}, "
+                f"L2²(Δb', Δm)={l2_d4:.4f}"
+            )
+            
             
             self.logger.info("[FedOda] Step 7: Performing Bayesian inference")
             if self.inference_mode == 'fixed':
@@ -717,7 +744,7 @@ class FedOda:
             elif self.inference_mode == 'cos':
                 posterior, mean_log_likelihood = self.bayesian_inference_cosine()
             elif self.inference_mode == 'l2':
-                posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update)) # works
+                posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update), use_average=False) # works
             elif self.inference_mode == 'sign':
                 posterior = self.sign_based_bayesian_inference()
             else:
@@ -727,9 +754,9 @@ class FedOda:
             if not hasattr(self, "posterior_history"):
                 self.posterior_history = []
             self.posterior_history.append(posterior)
-            if len(self.posterior_history) > self.E * 2:  # Keep more than E to filter later
+            if len(self.posterior_history) > self.E:  # Keep more than E to filter later
                 self.posterior_history.pop(0)
-
+            
             self.log_to_full_history(
                     s_b=s_b,
                     s_hat=s_hat,
@@ -744,12 +771,9 @@ class FedOda:
             # Only adjust scaling factor if not in fixed mode
             if self.inference_mode != 'fixed':
                 valid_posteriors = [p for p in self.posterior_history if p is not None]
-                if len(valid_posteriors) > 0:
-                    use_E = min(self.E, len(valid_posteriors))
-                    avg_posterior = sum(valid_posteriors[-use_E:]) / use_E
+                if valid_posteriors:
                     prev_factor = self.scaling_factor
-                    self.scaling_factor = self.adjust_scaling_factor(prev_factor, avg_posterior)
-                    self.logger.info(f"[FedOda] Avg posterior over last {use_E} = {avg_posterior:.4f}")
+                    self.scaling_factor = self.adjust_scaling_factor(prev_factor)
                     self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
                 else:
                     self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")

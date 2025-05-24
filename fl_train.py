@@ -29,7 +29,7 @@ from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 import statistics
 from FedOda import FedOda, flatten_model
-from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves
+from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves, plot_twin_curves
 logger = logging.getLogger("individual_logging")
 
 def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
@@ -198,20 +198,20 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         # object for FedOda class
         foda = FedOda(model_fn=model_fn, 
-                      device=device,
-                      pooled_loader=pooled_loader,
-                      vali_loader=original_vali_loader,
-                      total_clients_num=client_num,
-                      malicious_clients_num=len(malicious_client_ids),
-                      E=3,
-                      scaling_factor=5,
-                      reduce_factor=0.9,
-                      increase_factor=1.05,
-                      threshold=0.6,
-                      client_learning_rate=c_lr,
-                      client_data_size=mali_client_data_size,
-                      client_batch_size=client_batch_size,
-                      logger=logger)
+                    device=device,
+                    pooled_loader=pooled_loader,
+                    vali_loader=original_vali_loader,
+                    total_clients_num=client_num,
+                    malicious_clients_num=len(malicious_client_ids),
+                    E=params['fedoda']['E'],
+                    scaling_factor=params['fedoda']['scaling_factor'],
+                    reduce_factor=params['fedoda']['reduce_factor'],
+                    increase_factor=params['fedoda']['increase_factor'],
+                    threshold=params['fedoda']['threshold'],
+                    client_learning_rate=c_lr,
+                    client_data_size=mali_client_data_size,
+                    client_batch_size=client_batch_size,
+                    logger=logger)
     else:
         foda = None
         
@@ -231,6 +231,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     per_class_acc_vail_hist = []
     selected_clients_per_class_hist = []
     attack_success_hist = []
+    mistake_history = []
 
     # create plot dir
     plot_dir=f"{exp_dir}/plots"
@@ -375,7 +376,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         loss_acc_csv.append_save_csv([iter, test_loss, test_accuracy])
         attack_success_rate_csv.append_save_csv([iter] + list(attack_success_rate.values()))
 
-        logger.info(f"iter {iter}: C-Model, vali loss: {test_loss:.6f}, accuracy: {test_accuracy:.6f}")
+        logger.info(f"iter {iter}: C-Model, vali loss: {test_loss:.6f}, accuracy: {100*test_accuracy:.4f}%")
         if len(attack_success_rate) != 0:
             logger.info(f"attack_success:{attack_success_rate}")
         
@@ -383,6 +384,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if benign_client_ids:
             mistake_rate = len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
             mistakes_csv.append_save_csv([iter, mistake_rate, foda_posterior])  # Add posterior here
+            mistake_history.append(mistake_rate)
 
             if attack_method == 'FedOda':
                 if foda_posterior==None: 
@@ -405,26 +407,31 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
     logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
     logger.info(f"Experiment directory: {exp_dir}")
-    logger.handlers.clear()
+    
     
     # Extract FedOda attack metrics (if applicable)
-    fedoda_metrics = sanitize_attack_metrics(foda.full_history)
+    if foda:
+        fedoda_metrics = sanitize_attack_metrics(foda.full_history)
+    else:
+        fedoda_metrics = None
 
-    print("fedoda_metrics", fedoda_metrics)
+    logger.info(f"fedoda_metrics: {fedoda_metrics}")
+    logger.handlers.clear()
     
     plot_fl_results(params, exp_dir, 
                     loss_vail_hist, 
                     acc_vail_hist, 
                     per_class_acc_vail_hist, 
                     attack_success_hist,
+                    mistake_history,
                     fedoda_metrics)
 
     return loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, \
         selected_clients_per_class_hist, clients_eval_hist, attack_success_hist, fid_avg
 
 
-def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist,
-                    per_class_acc_vail_hist, attack_success_hist, fedoda_metrics=None):
+def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, 
+                    attack_success_hist, mistake_history, fedoda_metrics=None):
     try:
         # Determine non-IID parameter
         if params['noniid_type'] == 'label_skew':
@@ -446,19 +453,23 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist,
         plots_dir = os.path.join(exp_dir, "plots")
         os.makedirs(plots_dir, exist_ok=True)
 
-        plot_curve(
-            loss_vail_hist,
-            f"{fl_task}, vail loss, ({attack_method}-{non_iid_param})",
-            "vaid_loss",
-            save_dir=plots_dir
+        plot_twin_curves(
+            {
+                "Loss": loss_vail_hist,
+                "Accuracy": acc_vail_hist
+            },
+            title="Vail Accuracy vs. Loss",
+            filename="acc_loss",
+            save_dir=plots_dir,
         )
 
-        plot_curve(
-            acc_vail_hist,
-            f"{fl_task}, accuracy, ({attack_method}-{non_iid_param})",
-            "vaid_acc",
-            save_dir=plots_dir
-        )
+        if len(mistake_history)>0:
+            plot_curve(
+                mistake_history,
+                f"{fl_task}, mistake history, avg mistake {sum(mistake_history)/len(mistake_history):.2f}({attack_method}-{non_iid_param})",
+                "mistake_history",
+                save_dir=plots_dir
+            )
 
         per_class_accuracy_plot(
             per_class_acc_vail_hist,
@@ -481,8 +492,8 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist,
             # Group 1: s_b and s_hat
             plot_multi_curves(
                 {
-                    "s_b (estimated benign clients)": try_get("s_b"),
-                    "s_hat (estimated total clients)": try_get("s_hat")
+                    "$s_b$ (estimated benign clients)": try_get("s_b"),
+                    "$\hat{s}$ (estimated total clients)": try_get("s_hat")
                 },
                 title="Estimated Client Selection",
                 filename="clients_estimation",
@@ -527,28 +538,38 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist,
             )
 
             # Group 5: mean log-likelihood and posterior
-            plot_multi_curves(
+            plot_twin_curves(
                 {
                     "Mean Log-Likelihood": try_get("mean_log_likelihood"),
                     "Posterior P(H1|D)": try_get("posterior")
                 },
                 title="Bayesian Inference Metrics",
                 filename="bayesian_inference",
-                save_dir=plots_dir
+                save_dir=plots_dir,
             )
+
+
+            plot_twin_curves(
+                {
+                    "scaling_factor": try_get("scaling_factor"),
+                    "Posterior P(H1|D)": try_get("posterior")
+                },
+                title="Scaling_factor vs posterior",
+                filename="scalling_factor",
+                save_dir=plots_dir,
+            )
+
 
             # Group 6: Scaling factor, epsilon, benign_norm
             plot_multi_curves(
                 {
-                    "Scaling Factor": try_get("scaling_factor"),
                     "Epsilon": try_get("epsilon"),
                     "Benign Norm": try_get("benign_norm")
                 },
                 title="Attack Power Parameters",
                 filename="attack_parameters",
-                save_dir=plots_dir
+                save_dir=plots_dir,
             )
-
 
 
     except Exception as e:

@@ -396,21 +396,26 @@ def MinSum_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, d
 
 def no_defence_balance(params, global_parameters):
     total_num = len(params)
-    sum_parameters = None
-    for i in range(total_num):
-        if sum_parameters is None:
-            sum_parameters = {}
-            for key, var in params[i].items():
-                sum_parameters[key] = var.clone()
-        else:
-            for var in sum_parameters:
-                sum_parameters[var] = sum_parameters[var] + params[i][var]
+    sum_parameters = {}
+
+    for key in global_parameters:
+        if key.split('.')[-1] == 'num_batches_tracked':
+            continue  # Skip during summation, handled later
+        # Initialize summation with a clone from the first param
+        sum_parameters[key] = params[0][key].clone()
+    
+    for i in range(1, total_num):
+        for key in sum_parameters:
+            sum_parameters[key] += params[i][key]
+
     with torch.no_grad():
-        for var in global_parameters:
-            if var.split('.')[-1] == 'num_batches_tracked':
-                global_parameters[var] = params[0][var]
+        for key in global_parameters:
+            if key.split('.')[-1] == 'num_batches_tracked':
+                if key in params[0]:
+                    global_parameters[key] = params[0][key]
                 continue
-            global_parameters[var] += (sum_parameters[var] / total_num)
+            if key in sum_parameters:
+                global_parameters[key] = sum_parameters[key] / total_num
 
     return global_parameters
 
