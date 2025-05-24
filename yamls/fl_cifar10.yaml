@@ -1,4 +1,4 @@
-cuda_device: 0
+cuda_device: 1
 if_series: False
 
 # defense methods
@@ -21,7 +21,7 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'cifar10'
-c_model: "ConvNet" # "ConvNet", "ResNet18", "MobileNetV2_32", "SimpleCNN_32"
+c_model: "SqueezeNet_32" # "ConvNet", "ResNet18", "MobileNetV2_32", "SimpleCNN_32"
 ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.5
@@ -36,7 +36,7 @@ c_lr: 0.01
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 10
+fl_iter_num: 100
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
