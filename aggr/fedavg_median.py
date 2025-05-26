@@ -1,8 +1,6 @@
 import numpy as np
 import torch
-import heapq
-import itertools
-
+from copy import deepcopy
 
 def coordinate_wise_median(model_dict):
     new_weights = dict()
@@ -21,20 +19,55 @@ def coordinate_wise_median(model_dict):
     return new_weights
 
 
-def fedavg(model_dict):
-    new_weights = dict()
-    client_ids = list(model_dict.keys())
-    
-    with torch.no_grad():
-        for name, param in model_dict[client_ids[0]].items():
-            layer_weights = []
-            for client_id in client_ids:
-                layer_weights.append(model_dict[client_id][name])
+def fedavg(models):
+    """
+    Federated Averaging for both dict (client_id -> model) and list of model state_dicts.
 
-            t = torch.stack(layer_weights)
-            mean = t.float().mean(0)
-            new_weights[name] = mean
-    return new_weights
+    This version correctly handles BatchNorm buffers: running_mean and running_var are averaged;
+    num_batches_tracked is skipped.
+
+    Args:
+        models (dict or list): A dictionary of client_id -> model_state_dict
+                               or a list of model_state_dicts.
+
+    Returns:
+        Averaged model_state_dict
+    """
+    if isinstance(models, dict):
+        model_list = list(models.values())
+    elif isinstance(models, list):
+        model_list = models
+    else:
+        raise TypeError("Input should be a dict or list of model state_dicts.")
+
+    avg_model = deepcopy(model_list[0])
+
+    # Initialize to zero
+    for key in avg_model:
+        if "num_batches_tracked" in key:
+            continue
+        avg_model[key] = torch.zeros_like(avg_model[key])
+
+    # Sum all models
+    for model in model_list:
+        for key in avg_model:
+            if "num_batches_tracked" in key:
+                continue
+            avg_model[key] += model[key]
+
+    # Average
+    num_models = len(model_list)
+    for key in avg_model:
+        if "num_batches_tracked" in key:
+            continue
+        avg_model[key] /= num_models
+
+    # Copy over num_batches_tracked from the first model (safe default)
+    for key in avg_model:
+        if "num_batches_tracked" in key:
+            avg_model[key] = model_list[0][key]
+
+    return avg_model
 
 
 

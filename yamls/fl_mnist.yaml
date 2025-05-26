@@ -1,4 +1,4 @@
-cuda_device: 1
+cuda_device: 0
 if_series: False
 
 # defense methods
@@ -21,7 +21,7 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'mnist'
-c_model: "ConvNet" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
+c_model: "SimpleCNN_28" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.5
 # '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 

@@ -140,7 +140,8 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         # print(ds_train[0][0])
         # print(ds_train[0][1])
     elif dataset == 'ch':
-        ds = huggingface_load_dataset("dpdl-benchmark/colorectal_histology")['train']
+        #  biologists by focusing on histology tiles from patients with colorectal cancer
+        ds = huggingface_load_dataset("dpdl-benchmark/colorectal_histology")['train'] 
         ds_torch = to_torch_ds(ds, transform)
         random.shuffle(ds_torch)
         n_total = len(ds_torch)

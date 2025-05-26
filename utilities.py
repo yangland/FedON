@@ -230,10 +230,19 @@ def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
     return attacked_sd
 
 
-def model_weight_diff(model1_state_dict, model2_state_dict, magnitude=1):
-    for key in model1_state_dict.keys():
-        model1_state_dict[key] = (model1_state_dict[key] - model2_state_dict[key]) * magnitude
-    return model1_state_dict
+# def model_weight_diff(model1_state_dict, model2_state_dict, magnitude=1):
+#     for key in model1_state_dict.keys():
+#         model1_state_dict[key] = (model1_state_dict[key] - model2_state_dict[key]) * magnitude
+#     return model1_state_dict
+
+def model_weight_diff(new_sd, old_sd, magnitude=1):
+    diff = {}
+    for key in new_sd.keys():
+        if key in old_sd:
+            diff[key] = magnitude * (new_sd[key] - old_sd[key])
+        else:
+            diff[key] = magnitude * new_sd[key]
+    return diff
 
     
 def fang_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, device):
@@ -396,28 +405,24 @@ def MinSum_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, d
 
 def no_defence_balance(params, global_parameters):
     total_num = len(params)
-    sum_parameters = {}
-
-    for key in global_parameters:
-        if key.split('.')[-1] == 'num_batches_tracked':
-            continue  # Skip during summation, handled later
-        # Initialize summation with a clone from the first param
-        sum_parameters[key] = params[0][key].clone()
-    
-    for i in range(1, total_num):
-        for key in sum_parameters:
-            sum_parameters[key] += params[i][key]
-
+    sum_parameters = None
+    for i in range(total_num):
+        if sum_parameters is None:
+            sum_parameters = {}
+            for key, var in params[i].items():
+                sum_parameters[key] = var.clone()
+        else:
+            for var in sum_parameters:
+                sum_parameters[var] = sum_parameters[var] + params[i][var]
     with torch.no_grad():
-        for key in global_parameters:
-            if key.split('.')[-1] == 'num_batches_tracked':
-                if key in params[0]:
-                    global_parameters[key] = params[0][key]
+        for var in global_parameters:
+            if var.split('.')[-1] == 'num_batches_tracked':
+                global_parameters[var] = params[0][var]
                 continue
-            if key in sum_parameters:
-                global_parameters[key] = sum_parameters[key] / total_num
+            global_parameters[var] += (sum_parameters[var] / total_num)
 
     return global_parameters
+
 
 def get_model_update(updated_model, model):
     '''Returns the difference while preserving gradients'''
@@ -619,3 +624,13 @@ def grad_normlization_factor(client_grad_dict):
     return clip_value, weights
 
 
+def check_model_nan(model):
+    for name, param in model.named_parameters():
+        if torch.isnan(param).any():
+            print(f"[NaN DETECTED] in parameter: {name}")
+
+def check_bn_buffers(model):
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
+            if torch.isnan(module.running_mean).any() or torch.isnan(module.running_var).any():
+                print(f"[NaN DETECTED] in BatchNorm buffer: {name}")

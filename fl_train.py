@@ -33,6 +33,7 @@ from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves
 logger = logging.getLogger("individual_logging")
 
 def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
+    # Set random seeds for reproducibility
     random.seed(params.get('seed', 42))
     np.random.seed(params.get('seed', 42))
     torch.manual_seed(params.get('seed', 42))
@@ -249,7 +250,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                 dataset=params['fl_task'])
 
     # send main to all clients
-    mco_dict = send_main_to_clients(client_num, mco_dict)
+    mco_dict = send_main_to_clients(client_num, mco_dict, device)
     benign_client_ids = []
     fid_avg = 0
     
@@ -398,7 +399,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         logger.info(f"exp total running time: {datetime.timedelta(seconds=(time.time() - t0))}")
         
         # send main to all clients
-        mco_dict = send_main_to_clients(client_num, mco_dict)
+        mco_dict = send_main_to_clients(client_num, mco_dict, device=device)
+        
+        # periodic GPU memory cleanup
+        if iter % 10 == 0:  # Cleanup every 10 iterations
+            torch.cuda.empty_cache()
 
 
     # save server models

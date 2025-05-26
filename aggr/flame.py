@@ -30,11 +30,11 @@ def flame_aggr(server_sd, grad_dict, noise=0.001, exp_dir="", iter=0):
     
     # Return the gradient update (difference between new and old server state)
     server_grad = get_model_update(new_server_sd, server_sd)
+    
     return server_grad, flame_clients
 
 
 def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0):
-    # cos = torch.nn.CosineSimilarity(dim=0, eps=1e-6).cuda()
     cos_list=[]
     local_model_vector = []
     # caculate update_params(local gradients) from clients' sources and the target
@@ -49,19 +49,29 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
         local_model_vector.append(modelsd2flat(param))
         update_params.append(get_model_update(param, server_sd))
         client_ids.append(client_id)    
-        
+  
+  
+    for i in range(len(local_model_vector)):
+        if torch.isnan(local_model_vector[i]).any():
+            logger.info(f"FLAME: NaNs in local_model_vector[{i}], replacing with zeros")
+            local_model_vector[i] = torch.nan_to_num(local_model_vector[i],
+                                                     nan=0.0, 
+                                                     posinf=0.0, 
+                                                     neginf=0.0)
         
     for i in range(len(local_model_vector)):
         cos_i = []
         for j in range(len(local_model_vector)):
-            cos_ij = 1- F.cosine_similarity(local_model_vector[i],local_model_vector[j], dim=0)
+            cos_ij = 1 - F.cosine_similarity(local_model_vector[i],
+                                             local_model_vector[j],
+                                             dim=0)
             cos_i.append(cos_ij.item())
         cos_list.append(cos_i)
 
     
     if np.isnan(cos_list).any():
-        print("NaN detected in cos_list!")
-        print(f"NaN locations: {np.where(np.isnan(cos_list))}")
+        logger.info("FLAME: NaN detected in cos_list!")
+        logger.info(f"FLAME: NaN locations: {np.where(np.isnan(cos_list))}")
         cos_list = np.nan_to_num(cos_list, nan=0.0)
     
     # logger.info(f"cos_list len: {len(cos_list)}")
@@ -82,9 +92,8 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
         client_ids=client_ids
     )
     
-    
     clusterer = hdbscan.HDBSCAN(min_cluster_size=num_clients//2 + 1,min_samples=1,allow_single_cluster=True).fit(cos_list)
-    logger.info(f"flame clusterer.labels_ {str(clusterer.labels_)}")
+    logger.info(f"FLAME: clusterer.labels_ {str(clusterer.labels_)}")
     benign_idx = []
     norm_list = np.array([])
 
@@ -103,11 +112,12 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
             if clusterer.labels_[i] == max_cluster_index:
                 benign_idx.append(i)
     
+    
     # get the norm of all clients            
     for i in range(num_clients):
         flat = modelsd2flat(update_params[i])
         if torch.isnan(flat).any() or torch.isinf(flat).any():
-            print("FLAME Tensor contains NaN or Inf values!")
+            print("FLAME: Tensor contains NaN or Inf values!")
             # You can handle it here, e.g., skip this update or replace NaNs
             flat = modelsd2flat(update_params[i])
             flat = torch.nan_to_num(flat, nan=0.0, posinf=0.0, neginf=0.0)
@@ -120,20 +130,27 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
         norm_list = [val for val in norm_list if not np.isnan(val)] 
     
     if len(norm_list) == 0:
-        raise ValueError("norm_list is empty after NaN removal, cannot compute median.")
+        raise ValueError("FLAME: norm_list is empty after NaN removal, cannot compute median.")
     
-    print(f"benign_idx: {benign_idx}")
+    # print(f"benign_idx: {benign_idx}")
     
     clip_value = np.median(norm_list)
     for i in range(len(benign_idx)):
-        gama = clip_value/(norm_list[i] + 1e-15)
+        client_idx = benign_idx[i]
+        gama = clip_value / (norm_list[client_idx] + 1e-15)
         if gama < 1:
-            for key in update_params[benign_idx[i]]:
+            for key in update_params[client_idx]:
                 if key.split('.')[-1] == 'num_batches_tracked':
                     continue
-                update_params[benign_idx[i]][key] *= gama
+                update_params[client_idx][key] *= gama
+
+    logger.info(f"[FLAME DEBUG][Iter {iter}] Norm list: {norm_list}")
+    logger.info(f"[FLAME DEBUG][Iter {iter}] Clip value: {clip_value}")
     
-    new_server_sd = no_defence_balance([update_params[i] for i in benign_idx], server_sd_copy)
+    # average of the model udpates then + the server model weight
+    # new_server_sd = no_defence_balance([update_params[i] for i in benign_idx], server_sd_copy)
+    new_server_update = fedavg([update_params[i] for i in benign_idx])
+    new_server_sd = get_model_merged(new_server_update, server_sd_copy)
     
     #add noise
     with torch.no_grad():
@@ -141,10 +158,11 @@ def flame(server_sd, model_dict, noise=0.001, client_ids=[], exp_dir="", iter=0)
             if key.split('.')[-1] == 'num_batches_tracked':
                         continue
             temp = deepcopy(var)
-            temp = temp.normal_(mean=0,std=noise*clip_value)
+            temp = torch.normal(mean=0, std=noise, size=var.shape).to(var.device)
             var += temp
     
     # convert the list index to the clients_ids
     benign_client_ids = [client_ids[i] for i in benign_idx]
     
     return  new_server_sd, benign_client_ids
+

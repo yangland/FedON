@@ -38,6 +38,8 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
                     fl_data_dict, mco_dict, batch_size, 
                     dba_poisoning_per_batch=0.2, FedOda_class=None, device=None):
     foda_posterior = None  # initialize
+    # Add at start of function
+    torch.cuda.empty_cache()
     
     if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
         if FedOda_class.server_model is None:
@@ -65,6 +67,14 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
                                             malicious_client_ids, attack_method,
                                             FedOda_class, foda_posterior, device)
 
+    
+    # Add before return cleanup memory
+    for client_id in client_selection:
+        if c_sd_before[client_id] is not None:
+            for k in c_sd_before[client_id]:
+                if torch.is_tensor(c_sd_before[client_id][k]):
+                    c_sd_before[client_id][k] = c_sd_before[client_id][k].cpu()
+    
     return c_grad_dict, foda_posterior
 
 
@@ -530,10 +540,24 @@ def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, 
     return mco_dict
 
 
-def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
+# def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
+#     with torch.no_grad():
+#         for i in range(client_num):
+#                 mco_dict[i]["c_model"].load_state_dict(mco_dict[-1]["c_model"].state_dict())
+#     return mco_dict
+
+def send_main_to_clients(client_num, mco_dict, device):
     with torch.no_grad():
+        server_state = mco_dict[-1]["c_model"].state_dict()
+        # Move server state to CPU first
+        server_state_cpu = {k: v.cpu() for k, v in server_state.items()}
+        
         for i in range(client_num):
-                mco_dict[i]["c_model"].load_state_dict(mco_dict[-1]["c_model"].state_dict())
+            # Load CPU state directly to device
+            client_state = {k: v.to(device) for k, v in server_state_cpu.items()}
+            mco_dict[i]["c_model"].load_state_dict(client_state)
+            
+    torch.cuda.empty_cache()
     return mco_dict
 
 def train_c_model(train_loader, model, criterion, optimizer, attack_method, client_id,
@@ -620,6 +644,9 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
     original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=5)
     test_loader = original_test_loader  # default to original if no attack applies
+
+    # Add at start
+    torch.cuda.empty_cache()
     
     # Move model to device
     model = model.to(device)
@@ -733,6 +760,12 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
                 attack_success_rate[class_id] = (
                     attack_success_rate[class_id] / total_pred[class_id] if total_pred[class_id] > 0 else -1
                 )
+
+    # Add before return
+    del test_loader, original_test_loader
+    if 'modified_test_set' in locals():
+        del modified_test_set
+    torch.cuda.empty_cache()
 
     return test_loss, accuracy, per_class_accuracy, attack_success_rate
 

@@ -16,19 +16,19 @@ def get_model(model_name):
         "ConvNet": ConvNet,
         "Mnist_6L": Mnist_6L,
         "Cifar10_18L": Cifar10_18L,
-        "ResNet18": ResNet18,
+        "ResNet18": ResNet18, # works for cifar10
         "VGG11": VGG11,
         "VGG13": VGG13,
-        "VGG13_32": VGG13_32,
+        "VGG13_32": VGG13_32, # wrks for cifar10
         "VGG16": VGG16,
         "EfficientNetB0": EfficientNetB0, 
         "MobileNetV2": MobileNetV2,
-        "MobileNetV2_32": MobileNetV2_32,
+        "MobileNetV2_32": MobileNetV2_32, # not working for cifar10
         "SqueezeNet": SqueezeNet,
-        "SqueezeNet_32": SqueezeNet_32,
+        "SqueezeNet_32": SqueezeNet1_1_32, # works for cifar10
         "LeNet5": LeNet5,
         "SimpleCNN_28": SimpleCNN_28,
-        "SimpleCNN_32": SimpleCNN_32,
+        "SimpleCNN_32": SimpleCNN_32, # works for cifar10
         "MobileNetV2_28": MobileNetV2_28, # works for fmnist
     }
 
@@ -101,30 +101,37 @@ class SqueezeNet(nn.Module):
         return self.model(x)
 
 
-class SqueezeNet_32(nn.Module):
+
+class SqueezeNet1_1_32(nn.Module):
     def __init__(self, num_classes=10):
-        super(SqueezeNet_32, self).__init__()
-        
-        # Load base model
-        self.model = models.squeezenet1_0(weights=None)
-        
-        # Adjust for CIFAR-10's 32x32 input
-        self.model.features[0] = nn.Conv2d(3, 96, kernel_size=3, stride=1, padding=1)
-        
-        # Add adaptive pooling to handle size mismatch
+        super(SqueezeNet1_1_32, self).__init__()
+
+        # Load base model without pretrained weights
+        self.model = models.squeezenet1_1(weights=None)
+
+        # Modify the first conv layer to avoid aggressive downsampling
+        self.model.features[0] = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1)
+
+        # Remove the maxpool after the first conv layer (downsampling too early)
+        self.model.features[1] = nn.Identity()
+
+        # Add adaptive pooling before classifier to ensure fixed size
         self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # Proper classifier modification
+
+        # Replace the classifier
         self.model.classifier = nn.Sequential(
-            nn.Dropout(p=0.5),
+            nn.Dropout(p=0.3),
             nn.Conv2d(512, num_classes, kernel_size=1),
             nn.ReLU(inplace=True),
             self.adaptive_pool
         )
+
         self.num_classes = num_classes
-        
+
     def forward(self, x):
-        return self.model(x).view(-1, self.num_classes)
+        x = self.model(x)
+        return x.view(x.size(0), -1)  # Flatten to (batch_size, num_classes)
+
     
     
 
@@ -152,7 +159,7 @@ class SqueezeNet_28(nn.Module):
         )
 
         self.classifier = nn.Sequential(
-            nn.Dropout(p=0.5),
+            nn.Dropout(p=0.2),
             nn.Conv2d(512, num_classes, kernel_size=1),
             nn.ReLU(inplace=True),
             nn.AdaptiveAvgPool2d((1, 1)),
