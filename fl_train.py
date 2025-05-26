@@ -286,9 +286,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 c_grad = fedavg(c_grad_dict)
             elif aggr == 'geometric_median':
                 c_grad, geo_weights = geo_med_aggr(c_grad_dict, device)
+                print("geo_weights", geo_weights)
                 c_weights_csv.append_save_csv(
-                        [iter] + [v.item() for k, v in sorted(geo_weights.items())]
-                    )
+                    [iter] + [v for k, v in sorted(geo_weights.items())]  # Remove .item() since v is already a float
+                )
             elif aggr == 'coordinate_wise_median':
                 c_grad = coordinate_wise_median(c_grad_dict)
             elif aggr == 'trimmed_mean':
