@@ -5,6 +5,7 @@ import math
 import logging
 from torch.utils.data import DataLoader
 import torch.optim as optim    
+import random
     
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
@@ -38,7 +39,9 @@ class FedOda:
         self.epsilon = None
         self.server_model = None
         self.previous_server_model = None
-                
+        self.ema_posterior = None  # Initialize EMA tracker
+        self.ema_alpha = 0.3       # Tunable: higher = more weight on recent posterior
+                        
         # Logging
         self.logger = logger or logging.getLogger("FedOda")
 
@@ -482,44 +485,62 @@ class FedOda:
 
     def adjust_scaling_factor(self, scaling_factor):
         """
-        Adjusts the scaling factor based on the history of posterior probabilities.
-        Keeps it stable if posterior is close to the threshold.
-
-        Returns:
-            float: Updated and clamped scaling factor.
+        Adjusts the scaling factor using an exponentially weighted average of posterior history,
+        and exploration to avoid local optima.
         """
-        # Save posterior history
-        # if not hasattr(self, "posterior_history"):
-        #     self.posterior_history = []
-        # self.posterior_history.append(last_posterior)
-        # if len(self.posterior_history) > self.E:
-        #     self.posterior_history.pop(0)
+        if not self.posterior_history or all(p is None for p in self.posterior_history):
+            return scaling_factor  # fallback if no valid data
 
-        # Compute average posterior over last E rounds
-        avg_posterior = sum(self.posterior_history) / len(self.posterior_history)
-        
-        self.logger.info(f"[FedOda] Posterior history: {[f'{x:.4f}' for x in self.posterior_history]}")
-        self.logger.info(f"[FedOda] Avg posterior over last {len(self.posterior_history)} rounds = {avg_posterior:.4f}")
+        # Use most recent valid posterior
+        recent_posterior = next((p for p in reversed(self.posterior_history) if p is not None), None)
+        if recent_posterior is None:
+            return scaling_factor  # fallback
 
-        # Stability margin around threshold
+        # Update EMA
+        if self.ema_posterior is None:
+            self.ema_posterior = recent_posterior
+        else:
+            self.ema_posterior = self.ema_alpha * recent_posterior + (1 - self.ema_alpha) * self.ema_posterior
+
+        avg_posterior = self.ema_posterior
+
+        # Log full history
+        formatted_history = [f"{p:.4f}" if p is not None else "None" for p in self.posterior_history]
+        self.logger.info(f"[FedOda] Posterior history (last {len(self.posterior_history)} rounds): {formatted_history}")
+        self.logger.info(f"[FedOda] EMA posterior = {self.ema_posterior:.4f}")
+
+        # Parameters
         margin = 0.1
         lower = self.threshold - margin
         upper = self.threshold + margin
 
-        if lower <= avg_posterior <= upper:
-            # Posterior is close to threshold — keep it stable
-            self.logger.info(f"[FedOda] Posterior near threshold {avg_posterior} in [{lower, upper}] — scaling factor unchanged.")
-            new_factor = scaling_factor
-        elif avg_posterior < lower:
-            new_factor = scaling_factor * self.reduce_factor
-            self.logger.info(f"[FedOda] Posterior low < {lower} — increasing stealth (reduce scaling).")
-        else:
-            new_factor = scaling_factor * self.increase_factor
-            self.logger.info(f"[FedOda] Posterior high > {upper} — increasing attack power.")
+        exploration_prob = 0.1
+        exploration_scale = 1.5
 
-        # Clamp to [0.5, 20]
+        should_explore = random.random() < exploration_prob
+
+        if should_explore:
+            direction = random.choice(['up', 'down'])
+            if direction == 'up':
+                new_factor = scaling_factor * exploration_scale
+                self.logger.info("[FedOda] Exploration: Trying increased scaling factor.")
+            else:
+                new_factor = scaling_factor * self.reduce_factor
+                self.logger.info("[FedOda] Exploration: Trying reduced scaling factor.")
+        else:
+            if avg_posterior < lower:
+                new_factor = scaling_factor * self.reduce_factor
+                self.logger.info(f"[FedOda] EMA posterior low < {lower:.4f} — reducing scaling.")
+            elif avg_posterior > upper:
+                new_factor = scaling_factor * self.increase_factor
+                self.logger.info(f"[FedOda] EMA posterior high > {upper:.4f} — increasing scaling.")
+            else:
+                new_factor = scaling_factor * 1.05
+                self.logger.info(f"[FedOda] EMA posterior near threshold — slightly increasing.")
+
         new_factor = max(0.5, min(20.0, new_factor))
         return new_factor
+
 
 
     def simulate_benign_update(self, loader, data_size=500, batch_size=64):
@@ -659,7 +680,7 @@ class FedOda:
         return malicious_update_dict, malicious_update, posterior
 
 
-    def _regular_attack(self):
+    def _regular_attack_old(self):
         self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
         g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
 
@@ -797,6 +818,155 @@ class FedOda:
         self.logger.info("[FedOda] Attack completed, returning malicious update.")
 
         # ✅ Save current selection for use in next round
+        self.prev_s_m = self.current_s_m
+
+        return malicious_update_dict, malicious_update, posterior
+
+
+    def _regular_attack(self):
+        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
+        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+
+        self.logger.info("[FedOda] Step 2: Predicting benign update")
+        benign_update, simulated_norm = self.simulate_benign_update(
+            loader=self.pooled_loader,
+            data_size=self.client_data_size,
+            batch_size=self.client_batch_size
+        )
+
+        # Step 3: Estimate number of benign clients
+        if self.prev_s_m is not None and self.prev_s_m > 0:
+            s_b, s_hat = self.estimate_benign_clients(
+                total_clients_num=self.total_clients_num,
+                malicious_clients_num=self.malicious_clients_num,
+                current_s_m=self.prev_s_m
+            )
+        else:
+            s_b = self.total_clients_num - self.malicious_clients_num
+            s_hat = self.total_clients_num
+            self.logger.warning("[FedOda] prev_s_m is None. Using fallback s_b and s_hat.")
+
+        s_m = self.prev_s_m if self.prev_s_m else self.malicious_clients_num
+        alpha = s_m / s_hat  # malicious client portion
+
+        self.logger.info(f"[FedOda] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}, s_m = {s_m}, alpha = {alpha:.4f}")
+
+        # Step 4: Define target norm (β) for the aggregate update
+        if self.history_server_updates:
+            avg_l2_norm = sum(delta.norm().item() for delta in self.history_server_updates) / len(self.history_server_updates)
+        else:
+            avg_l2_norm = simulated_norm
+            self.logger.warning("[FedOda] No history available. Using simulated norm.")
+
+        beta = avg_l2_norm
+
+        # Step 5: Compute ε = scaling_factor * benign_norm
+        self.epsilon = self.scaling_factor * avg_l2_norm
+
+        # Step 6: Compute malicious update direction
+        # v = 1/alpha * (β * g_m - (1 - alpha) * Δ_b)
+        v = (beta * g_m_vec) - ((1 - alpha) * benign_update)
+        v = v / (alpha + 1e-10)
+
+        direction = v / (v.norm() + 1e-10)
+        malicious_update = self.epsilon * direction
+
+        # Evaluate the malicious update
+        val_accuracy = self._evaluate_malicious_update(malicious_update)
+        self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.2f}%")
+        self.logger.info(f"[FedOda] benign_norm = {simulated_norm:.4f}, scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
+
+        # Step 7: If selected last round, update history and perform inference
+        if self.prev_s_m is not None and self.prev_s_m > 0:
+            self.logger.info("[FedOda] Step 7: Observing actual server update from previous round")
+            delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
+            delta_s_pred = self.estimate_server_update(s_b, s_m, benign_update, malicious_update)
+
+            self.logger.info("[FedOda] Step 8: Updating history")
+            self.update_history(delta_s, benign_update, delta_s_pred, s_m, malicious_update)
+
+            cos_d1, cos_d2, cos_d3, cos_d4 = self.get_cos_dist(delta_s,
+                                                            benign_update,
+                                                            delta_s_pred,
+                                                            malicious_update)
+
+            l2_d1, l2_d2, l2_d3, l2_d4 = self.get_l2_dist(delta_s,
+                                                        benign_update,
+                                                        delta_s_pred,
+                                                        malicious_update)
+
+            self.logger.info(
+                f"[FedOda] cos_d(Δs, Δb')={cos_d1:.4f}, "
+                f"cos_d(Δs, Δs')={cos_d2:.4f}, "
+                f"cos_d(Δs, Δm)={cos_d3:.4f}, "
+                f"cos_d(Δb', Δm)={cos_d4:.4f}"
+            )
+
+            self.logger.info(
+                f"[FedOda] L2²(Δs, Δb')={l2_d1:.4f}, "
+                f"L2²(Δs, Δs')={l2_d2:.4f}, "
+                f"L2²(Δs, Δm)={l2_d3:.4f}, "
+                f"L2²(Δb', Δm)={l2_d4:.4f}"
+            )
+
+            self.logger.info("[FedOda] Step 9: Performing Bayesian inference")
+            if self.inference_mode == 'fixed':
+                posterior = None
+                self.logger.info("[FedOda] Fixed mode - maintaining constant scaling factor")
+            elif self.inference_mode == 'cos':
+                posterior, mean_log_likelihood = self.bayesian_inference_cosine()
+            elif self.inference_mode == 'l2':
+                posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update), use_average=False)
+            elif self.inference_mode == 'sign':
+                posterior = self.sign_based_bayesian_inference()
+            else:
+                raise ValueError(f"Unknown inference mode: {self.inference_mode}")
+
+            # Store posterior in history
+            if not hasattr(self, "posterior_history"):
+                self.posterior_history = []
+            self.posterior_history.append(posterior)
+            if len(self.posterior_history) > self.E:
+                self.posterior_history.pop(0)
+
+            self.log_to_full_history(
+                s_b=s_b,
+                s_hat=s_hat,
+                benign_norm=simulated_norm,
+                server_update_norm=delta_s.norm().item(),
+                cos_d1=cos_d1, cos_d2=cos_d2, cos_d3=cos_d3, cos_d4=cos_d4,
+                l2_d1=l2_d1, l2_d2=l2_d2, l2_d3=l2_d3, l2_d4=l2_d4,
+                l=mean_log_likelihood if self.inference_mode == "l2" else None,
+                posterior=posterior
+            )
+
+            if self.inference_mode != 'fixed':
+                valid_posteriors = [p for p in self.posterior_history if p is not None]
+                if valid_posteriors:
+                    prev_factor = self.scaling_factor
+                    self.scaling_factor = self.adjust_scaling_factor(prev_factor)
+                    self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
+                else:
+                    self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")
+            else:
+                self.logger.info(f"[FedOda] Fixed mode - scaling factor remains at {self.scaling_factor:.4f}")
+
+        else:
+            self.logger.info("[FedOda] Malicious clients were not selected last round. Skipping inference.")
+            posterior = None
+            if not hasattr(self, "posterior_history"):
+                self.posterior_history = []
+            self.posterior_history.append(None)
+            if len(self.posterior_history) > self.E * 2:
+                self.posterior_history.pop(0)
+
+        # Step 10: Return malicious update
+        self.logger.info("[FedOda] Step 10: Creating malicious update dict")
+        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+
+        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * avg_l2_norm:.4f}")
+        self.logger.info("[FedOda] Attack completed, returning malicious update.")
+
         self.prev_s_m = self.current_s_m
 
         return malicious_update_dict, malicious_update, posterior

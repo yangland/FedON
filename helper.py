@@ -115,7 +115,7 @@ attack_magnitude_mapping = {
     'label_perturbation': 3,
     'fakedata': 1,
     'clear_label_backdoor': 1,
-    'reverse_grad': 1,
+    'reverse_grad': 3,
     'fang': 1,
     'MinMax': 1,
     'MinSum': 1,
@@ -152,7 +152,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
         elif attack_method in ['backdoor', 'fakedata', 'label_perturbation', '2_label_flipping', 'clear_label_backdoor', 'dba']:
             c_grad_dict[client_id] = model_weight_diff(mco_dict[client_id]["c_model"].state_dict(), c_sd_before[client_id], attack_magnitude)
         elif attack_method == 'LIE':
-            c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", Z_max=0.16)
+            c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", Z_max=0.28)
         elif attack_method == 'fang':
             c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
         elif attack_method == 'MinMax':
@@ -905,3 +905,37 @@ class NegativeEntropyLoss(nn.Module):
         log_probs = F.log_softmax(logits, dim=1)
         entropy = -torch.sum(probs * log_probs, dim=1)  # shape: [batch_size]
         return -entropy.mean()
+    
+    
+def normalize_model_weights(state_dict, max_norm=1.0):
+    normalized_sd = {}
+    for name, param in state_dict.items():
+        # Skip buffers and biases
+        if any(buf in name for buf in ['running_mean', 'running_var', 'num_batches_tracked']):
+            normalized_sd[name] = param
+            continue
+        if 'bias' in name:
+            normalized_sd[name] = param
+            continue
+        
+        norm = torch.norm(param.float())
+        if norm > max_norm:
+            scale = max_norm / (norm + 1e-8)
+            normalized_sd[name] = (param.float() * scale).type_as(param)
+        else:
+            normalized_sd[name] = param
+    return normalized_sd
+
+def soft_clip_weights(state_dict, clip_threshold=5.0, shrink_ratio=0.9):
+    clipped_sd = {}
+    for name, param in state_dict.items():
+        if 'running_' in name or 'num_batches_tracked' in name or 'bias' in name:
+            clipped_sd[name] = param
+            continue
+        clipped = torch.where(
+            param.abs() > clip_threshold,
+            param * shrink_ratio,
+            param
+        )
+        clipped_sd[name] = clipped
+    return clipped_sd

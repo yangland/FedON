@@ -399,13 +399,19 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         print("Elapsed Time this round:", "{:.2f} sec".format(time.time() - t1))
         logger.info(f"exp total running time: {datetime.timedelta(seconds=(time.time() - t0))}")
         
+        if iter % 10 == 0:
+            logger.info(f"every 10 iterations, normalize server model weights")
+            # normalize server model weights
+            mco_dict[-1]["c_model"].load_state_dict(
+                        soft_clip_weights(mco_dict[-1]["c_model"].state_dict(), clip_threshold=5.0)
+                    )
+        
         # send main to all clients
         mco_dict = send_main_to_clients(client_num, mco_dict, device=device)
         
         # periodic GPU memory cleanup
         if iter % 10 == 0:  # Cleanup every 10 iterations
             torch.cuda.empty_cache()
-
 
     # save server models
     path_c_model=f"{exp_dir}/c_model_{iter}.pt"

@@ -202,6 +202,7 @@ def training_csv_logging(iter, clients_eval_dict, sr_index, related_candidate_me
     
     reso_csv.append_save_csv([iter] + list(avg_resos))
     
+    
 def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
     # based on paper: A little is enough: circumventing defenses for distributed learnin
     # https://dl.acm.org/doi/10.5555/3454287.3455062
@@ -217,23 +218,23 @@ def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
     
     with torch.no_grad():
         for layer_name, param in malicious_models[malicious_client_ids[0]].items():
-            layer_list = []
-            for client_id in malicious_client_ids:
-                layer_weight = malicious_models[client_id][layer_name]
-                layer_list.append(layer_weight)
+            if not is_trainable_param(layer_name):
+                continue  # Skip buffers
+
+            layer_list = [malicious_models[client_id][layer_name] for client_id in malicious_client_ids]
             stacked_layer_w = torch.stack(layer_list)
-            # get standard deviation
             std = torch.std(stacked_layer_w.float(), dim=0, correction=0)
-            
+
             attacked_sd[layer_name] = mean[layer_name].float() + Z_max * std.float()
 
-    return attacked_sd
+    return safe_model_state_dict(attacked_sd)
 
 
-# def model_weight_diff(model1_state_dict, model2_state_dict, magnitude=1):
-#     for key in model1_state_dict.keys():
-#         model1_state_dict[key] = (model1_state_dict[key] - model2_state_dict[key]) * magnitude
-#     return model1_state_dict
+def is_trainable_param(name):
+    # Typical buffer keys to exclude
+    buffer_keywords = ['running_mean', 'running_var', 'num_batches_tracked']
+    return not any(buf in name for buf in buffer_keywords)
+
 
 def model_weight_diff(new_sd, old_sd, magnitude=1):
     diff = {}
@@ -634,3 +635,20 @@ def check_bn_buffers(model):
         if isinstance(module, torch.nn.modules.batchnorm._BatchNorm):
             if torch.isnan(module.running_mean).any() or torch.isnan(module.running_var).any():
                 print(f"[NaN DETECTED] in BatchNorm buffer: {name}")
+
+def safe_tensor(tensor):
+    tensor = tensor.clone()
+    tensor[torch.isnan(tensor)] = 0
+    tensor[torch.isinf(tensor)] = 0
+    return tensor
+
+def safe_model_state_dict(state_dict):
+    safe_sd = {}
+    for name, param in state_dict.items():
+        if torch.is_tensor(param):
+            if torch.isnan(param).any() or torch.isinf(param).any():
+                print(f"[Warning] Detected NaN/Inf in layer: {name}")
+            safe_sd[name] = safe_tensor(param)
+        else:
+            safe_sd[name] = param
+    return safe_sd
