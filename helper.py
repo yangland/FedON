@@ -518,12 +518,12 @@ def add_trigger(img_tensor, pattern_size, rgb, solid):
 def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, c_momentum, num_classes, dataset):
     mco_dict = {}
     for i in range(-1, client_num):
-        # C MODEL
+        # Create model directly on target device
         c_model_class = get_model(c_model_name)
         c_model_fn = partial(c_model_class, num_classes=num_classes, dataset=dataset)
-        c_model = c_model_fn().to(device)
+        c_model = c_model_fn().to(device)  # Move to device immediately
         
-        c_criterion = nn.CrossEntropyLoss()
+        c_criterion = nn.CrossEntropyLoss().to(device)  # Move criterion to device
         
         if i == -1:
             c_optimizer = torch.optim.SGD(c_model.parameters(),
@@ -532,10 +532,9 @@ def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, 
             c_optimizer = torch.optim.SGD(c_model.parameters(),
                             lr=c_lr, momentum=c_momentum)
 
-
-        mco_dict[i] = {"c_model":c_model, 
-                       "c_criterion": c_criterion, 
-                       "c_optimizer": c_optimizer}
+        mco_dict[i] = {"c_model": c_model, 
+                      "c_criterion": c_criterion, 
+                      "c_optimizer": c_optimizer}
     
     return mco_dict
 
@@ -771,14 +770,14 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
 
 
 def grad_add_to_model(model, lr, grad):
-    # update on the input model
     model_sd = model.state_dict()
     for key in model_sd.keys():
         if key not in grad:
-            continue  # 🔁 Skip buffers like 'bn1.running_mean', etc.
-
+            continue
+            
         if isinstance(grad[key], torch.Tensor):
-            grad_to_add = (lr * grad[key]).to(model_sd[key].dtype)
+            # Ensure grad_to_add is on same device as model
+            grad_to_add = (lr * grad[key].to(model_sd[key].device)).to(model_sd[key].dtype)
             model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
 
     model.load_state_dict(model_sd)
