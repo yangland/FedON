@@ -20,7 +20,7 @@ from utilities import (
 from helper import *
 from csv_logging import CsvLogging
 from data_process import create_fl_trust_root_dataset
-
+from logging import StreamHandler
 from aggr.flame import flame_aggr
 from aggr.fltrust import cosScoreAndClipValue
 from aggr.fedavg_median import coordinate_wise_median, fedavg, trimmed_mean
@@ -28,6 +28,7 @@ from aggr.geometric_median import geo_med_aggr
 from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 import statistics
+import sys
 from FedOda import FedOda, flatten_model
 from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves, plot_twin_curves
 logger = logging.getLogger("individual_logging")
@@ -97,12 +98,26 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     
     t0 = time.time()
     
+    # 💡 Clear existing handlers (important for multi-experiment runs)
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
     logger.setLevel(logging.INFO)
+
+    # 📁 File handler
     logger_filehandler = FileHandler(f'{exp_dir}/L_{timestamp}.log')
     logger_filehandler.setLevel(logging.INFO)
     logger_filehandler.setFormatter(Formatter('%(asctime)s %(message)s (%(filename)s)', '%Y-%m-%d %H:%M:%S'))
     logger.addHandler(logger_filehandler)
-    
+
+    # 🖥️ Stream handler (important to show logs in terminal)
+    stream_handler = StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(Formatter('%(asctime)s %(message)s (%(filename)s)', '%Y-%m-%d %H:%M:%S'))
+    logger.addHandler(stream_handler)
+
+    # ❌ Prevent duplicate prints to root logger
+    logger.propagate = False
     
     # create the FL data for client(s)
     # control n and label_skew_alpha or p-degree can get Desired non-iid and fully use dataset
@@ -315,7 +330,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 server_c_sd = deepcopy(mco_dict[-1]["c_model"].state_dict())
                 c_grad, flame_clients = flame_aggr(server_c_sd, c_grad_dict, exp_dir=exp_dir, iter=iter)
                 benign_client_ids = flame_clients
-                logger.info(f"flame clients: {flame_clients}")
+                logger.info(f"flame clients: {flame_clients}, Rejected clients: {set(client_selection) - set(flame_clients)}")
             elif aggr == 'normbound':
                 server_c_sd = deepcopy(mco_dict[-1]["c_model"].state_dict())
                 c_grad = normbound_aggr(server_c_sd, c_grad_dict)

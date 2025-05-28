@@ -9,7 +9,8 @@ from logging import Formatter
 from utilities import timestamp
 import shutil
 from csv_logging import CsvLogging
-import torch
+import sys
+from logging import StreamHandler
 
 m_logger = logging.getLogger("master_logging")
 
@@ -38,11 +39,27 @@ def main():
         
     shutil.copy(args.params, f"{exp_dir}/{fl_task}_FL_{current_time}.yaml")
         
+    # Clear existing handlers
+    if m_logger.hasHandlers():
+        m_logger.handlers.clear()
+    
+    # Setup logger
     m_logger.setLevel(logging.INFO)
+    
+    # File handler
     m_logger_filehandler = FileHandler(f'{exp_dir}/S_{current_time}.log')
     m_logger_filehandler.setLevel(logging.INFO)
     m_logger_filehandler.setFormatter(Formatter('%(asctime)s %(message)s (%(filename)s)', '%Y-%m-%d %H:%M:%S'))
     m_logger.addHandler(m_logger_filehandler)
+    
+    # Stream (console) handler
+    stream_handler = StreamHandler(sys.stdout)
+    stream_handler.setLevel(logging.INFO)
+    stream_handler.setFormatter(Formatter('%(asctime)s %(message)s (%(filename)s)', '%Y-%m-%d %H:%M:%S'))
+    m_logger.addHandler(stream_handler)
+    
+    # Optional: prevent propagation to root
+    m_logger.propagate = False
     
     m_logger.info(f"Defense: {defense} - {aggr}")
 
