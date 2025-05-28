@@ -19,56 +19,33 @@ def coordinate_wise_median(model_dict):
     return new_weights
 
 
-def fedavg(models):
+def fedavg(models, average_bn_buffers=True):
     """
-    Federated Averaging for both dict (client_id -> model) and list of model state_dicts.
-
-    This version correctly handles BatchNorm buffers: running_mean and running_var are averaged;
-    num_batches_tracked is skipped.
-
+    Federated averaging of model parameters.
+    
     Args:
-        models (dict or list): A dictionary of client_id -> model_state_dict
-                               or a list of model_state_dicts.
-
+        models: Dict or list of model state_dicts
+        average_bn_buffers: Whether to average BatchNorm buffers (running_mean/var)
+                           num_batches_tracked is always taken from first model
     Returns:
-        Averaged model_state_dict
+        Averaged state_dict
     """
-    if isinstance(models, dict):
-        model_list = list(models.values())
-    elif isinstance(models, list):
-        model_list = models
-    else:
-        raise TypeError("Input should be a dict or list of model state_dicts.")
-
+    model_list = list(models.values()) if isinstance(models, dict) else models
     avg_model = deepcopy(model_list[0])
 
-    # Initialize to zero
+    # Process all parameters except num_batches_tracked
     for key in avg_model:
-        if "num_batches_tracked" in key:
+        if 'num_batches_tracked' in key:
             continue
-        avg_model[key] = torch.zeros_like(avg_model[key])
-
-    # Sum all models
-    for model in model_list:
-        for key in avg_model:
-            if "num_batches_tracked" in key:
-                continue
-            avg_model[key] += model[key]
-
-    # Average
-    num_models = len(model_list)
-    for key in avg_model:
-        if "num_batches_tracked" in key:
+            
+        if any(buf in key for buf in ['running_mean', 'running_var']):
+            if average_bn_buffers:
+                avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
             continue
-        avg_model[key] /= num_models
-
-    # Copy over num_batches_tracked from the first model (safe default)
-    for key in avg_model:
-        if "num_batches_tracked" in key:
-            avg_model[key] = model_list[0][key]
+            
+        avg_model[key] = torch.stack([m[key] for m in model_list]).mean(0)
 
     return avg_model
-
 
 
 def trimmed_mean(model_dict, m):

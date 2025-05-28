@@ -212,22 +212,64 @@ def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
     # Z_max, (20-4-7)/(20-4) = 0.5627 -> Z table 0.16
     # minus Z_max * std from mean
 
-    malicious_models = {client_id: mco_dict[client_id][model_type].state_dict() for client_id in malicious_client_ids}
-    mean = fedavg(malicious_models)
+    malicious_models = {
+            client_id: mco_dict[client_id][model_type].state_dict() 
+            for client_id in malicious_client_ids
+        }
+    mean = fedavg(malicious_models)  # Must return a state_dict
     attacked_sd = {}
-    
+        
     with torch.no_grad():
         for layer_name, param in malicious_models[malicious_client_ids[0]].items():
-            if not is_trainable_param(layer_name):
-                continue  # Skip buffers
+            if layer_name.endswith('num_batches_tracked'):
+                # Preserve as-is
+                attacked_sd[layer_name] = malicious_models[malicious_client_ids[0]][layer_name].clone()
+                continue
 
-            layer_list = [malicious_models[client_id][layer_name] for client_id in malicious_client_ids]
-            stacked_layer_w = torch.stack(layer_list)
-            std = torch.std(stacked_layer_w.float(), dim=0, correction=0)
+            # Stack values across malicious clients
+            layer_values = [malicious_models[client_id][layer_name].float()
+                            for client_id in malicious_client_ids]
+            stacked = torch.stack(layer_values)
+            std = torch.std(stacked, dim=0, correction=0)
+            attacked_value = mean[layer_name].float() - Z_max * std
 
-            attacked_sd[layer_name] = mean[layer_name].float() + Z_max * std.float()
+            # Ensure same dtype and shape
+            attacked_sd[layer_name] = attacked_value.to(param.dtype)
 
-    return safe_model_state_dict(attacked_sd)
+    return attacked_sd
+
+
+class MPAFAttack:
+    def __init__(self, model_type="c_model"):
+        self.server_sd_init = None
+        self.model_type = model_type
+
+    def __call__(self, malicious_client_ids, mco_dict, magnitude=1.0):
+        malicious_updates = {}
+
+        # Cache server_sd_init only once (assuming initial weights are identical)
+        if self.server_sd_init is None:
+            first_client = malicious_client_ids[0]
+            self.server_sd_init = {
+                key: torch.clone(val).detach()
+                for key, val in mco_dict[first_client][self.model_type].state_dict().items()
+            }
+            logger.info("[MPAF] Cache server_sd_init only once")
+
+        for client_id in malicious_client_ids:
+            latest_sd = mco_dict[client_id][self.model_type].state_dict()
+            diff = {}
+
+            for key in latest_sd:
+                if key.endswith('num_batches_tracked'):
+                    diff[key] = torch.clone(self.server_sd_init[key])
+                else:
+                    diff[key] = magnitude * (latest_sd[key] - self.server_sd_init[key])
+
+            malicious_updates[client_id] = diff
+
+        return malicious_updates
+
 
 
 def is_trainable_param(name):
@@ -276,16 +318,19 @@ def fang_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, dev
     return attacked_sd
 
 def update_model_with_malicious_gradient(state_dict, server_state, mal_update):
-    """Updates the model parameters using the malicious gradient update."""
     new_state_dict = {}
-    idx = 0  # Ensure idx is initialized before the loop
+    idx = 0
 
     for name in state_dict:
-        user_grad = mal_update[idx:(idx + state_dict[name].numel())].reshape(state_dict[name].shape)
-        new_state_dict[name] = server_state[name] + user_grad
-        idx += state_dict[name].numel()
+        if name.endswith('num_batches_tracked'):
+            new_state_dict[name] = server_state[name]  # Keep as-is
+            continue
 
-    # Load the updated state_dict into the model
+        numel = state_dict[name].numel()
+        user_grad = mal_update[idx:idx + numel].reshape(state_dict[name].shape)
+        new_state_dict[name] = server_state[name] + user_grad
+        idx += numel
+
     return new_state_dict
 
 def MinMax_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, device, dev_type ='std', threshold=30):
@@ -341,6 +386,7 @@ def MinMax_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, d
         mal_update = (model_re - model_re)
     
     attacked_sd = update_model_with_malicious_gradient(model_sd_before, model_sd_before, mal_update)
+    
     return attacked_sd
 
 
@@ -449,24 +495,19 @@ def get_model_merged(gradient_update, base_model):
 def modelsd2flat(model_dict):
     """
     Flattens a model's state dictionary into a single 1D tensor.
-    
-    Args:
-        model_dict: Model's state_dict (Dictionary of parameter tensors)
-    
-    Returns:
-        A flattened 1D tensor containing all parameters concatenated together
+    Skips non-trainable buffers like 'num_batches_tracked' for consistency.
     """
     ravel_list = []
     for layer_name, parms in model_dict.items():
-        # Only process parameters (ignore buffers and other non-tensor items)
-        if isinstance(parms, torch.Tensor):
-            ravel_list.append(parms.detach().reshape(-1))  # detach() to remove gradients
+        if isinstance(parms, torch.Tensor) and not layer_name.endswith('num_batches_tracked'):
+            ravel_list.append(parms.detach().reshape(-1))
     
-    if not ravel_list:  # Handle empty dictionary case
+    if not ravel_list:
         return torch.tensor([])
     
     flat_tensor = torch.cat(ravel_list)
     return flat_tensor
+
 
 
 def crosseval_high_accuracy_subset(accuracy_matrix): 

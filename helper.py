@@ -15,6 +15,7 @@ from models.model_utils import get_model
 from utilities import (
     MinMax_attack,
     MinSum_attack,
+    MPAFAttack,
     fang_attack,
     label_mapping,
     lie_attack,
@@ -22,7 +23,8 @@ from utilities import (
     training_csv_logging,
     create_client_weights,
     grad_normlization,
-    grad_normlization_factor
+    grad_normlization_factor,
+    safe_model_state_dict
 )
 
 from models.ch_mnist import Chmnist_13L
@@ -36,19 +38,22 @@ import torch.nn.functional as F
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, 
-                    dba_poisoning_per_batch=0.2, FedOda_class=None, device=None):
+                    dba_poisoning_per_batch=0.2, fedoda_attacker=None, device=None):
     foda_posterior = None  # initialize
     # Add at start of function
     torch.cuda.empty_cache()
     
     if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
-        if FedOda_class.server_model is None:
-            FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+        if fedoda_attacker.server_model is None:
+            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
         else:
-            FedOda_class.previous_server_model = copy.deepcopy(FedOda_class.server_model)
-            FedOda_class.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+            fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
+            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
 
-        FedOda_class.current_s_m = len(set(client_selection) & set(malicious_client_ids))
+        fedoda_attacker.current_s_m = len(set(client_selection) & set(malicious_client_ids))
+    elif attack_method == 'MPAF':
+        mpaf_attacker = MPAFAttack(model_type="c_model")
+
     
     c_sd_before = train_c_models(client_selection, 
                                     fl_data_dict,
@@ -64,8 +69,8 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
 
     # process for both benign and malicious clients
     c_grad_dict, foda_posterior = grad_process_c_model(mco_dict, client_selection, c_sd_before,
-                                            malicious_client_ids, attack_method,
-                                            FedOda_class, foda_posterior, device)
+                                            malicious_client_ids, attack_method, fedoda_attacker,
+                                             foda_posterior, mpaf_attacker, device)
 
     
     # Add before return cleanup memory
@@ -125,7 +130,7 @@ attack_magnitude_mapping = {
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, foda_posterior, device):
+                         FedOda_class, foda_posterior, mpaf_attacker, device):
     c_grad_dict = {}
 
     # benign clients
@@ -144,34 +149,83 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
         else:
             raise ValueError("FedOda_class is not initialized.")
     
-    # malicous clients
+    # malicious clients
     for client_id in malicious_client_ids:
-        if attack_method == 'reverse_grad':
-            # reverse the order in the model_weight_diff
-            c_grad_dict[client_id] = model_weight_diff(c_sd_before[client_id], mco_dict[client_id]["c_model"].state_dict(), attack_magnitude)
-        elif attack_method in ['backdoor', 'fakedata', 'label_perturbation', '2_label_flipping', 'clear_label_backdoor', 'dba']:
-            c_grad_dict[client_id] = model_weight_diff(mco_dict[client_id]["c_model"].state_dict(), c_sd_before[client_id], attack_magnitude)
-        elif attack_method == 'LIE':
-            c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", Z_max=0.28)
-        elif attack_method == 'fang':
-            c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-        elif attack_method == 'MinMax':
-            c_grad_dict[client_id] = MinMax_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-        elif attack_method == 'MinSum':
-            c_grad_dict[client_id] = MinSum_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-        elif attack_method == 'MPAF':
-            c_grad_dict[client_id] = model_weight_diff(c_sd_before[client_id], 
-                                                       mco_dict[client_id]["c_model"].state_dict(), 
-                                                       attack_magnitude)
-        elif attack_method == 'FedOda':
-            c_grad_dict[client_id] = foda_update_dict
-        else:
-            logger.info(f"unknown attack method {attack_method}")
+        try:
+            logger.info(f"Processing malicious client {client_id} with attack {attack_method}")
 
-        mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
-        grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
+            if attack_method == 'reverse_grad':
+                logger.info("Applying reverse_grad attack")
+                c_grad_dict[client_id] = model_weight_diff(
+                    c_sd_before[client_id], 
+                    mco_dict[client_id]["c_model"].state_dict(), 
+                    attack_magnitude
+                )
+            elif attack_method in ['backdoor', 'fakedata', 'label_perturbation', '2_label_flipping', 'clear_label_backdoor', 'dba']:
+                logger.info(f"Applying {attack_method} attack")
+                c_grad_dict[client_id] = model_weight_diff(
+                    mco_dict[client_id]["c_model"].state_dict(), 
+                    c_sd_before[client_id], 
+                    attack_magnitude
+                )
+            elif attack_method == 'LIE':
+                # logger.info("Applying LIE attack")
+                c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", Z_max=0.28)
+            elif attack_method == 'fang':
+                # logger.info("Applying fang attack")
+                c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+            elif attack_method == 'MinMax':
+                # logger.info("Applying MinMax attack")
+                c_grad_dict[client_id] = MinMax_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+            elif attack_method == 'MinSum':
+                # logger.info("Applying MinSum attack")
+                c_grad_dict[client_id] = MinSum_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+            elif attack_method == 'MPAF':
+                # logger.info("Applying MPAF attack")
+                malicious_updates = mpaf_attacker(malicious_client_ids, mco_dict, magnitude=attack_magnitude)
+                for client_id in malicious_client_ids:
+                    c_grad_dict[client_id] = malicious_updates[client_id]
+            elif attack_method == 'FedOda':
+                # logger.info("Applying FedOda attack")
+                c_grad_dict[client_id] = foda_update_dict
+            else:
+                logger.info(f"Unknown attack method {attack_method}")
+
+            # logger.info("Checking for NaN/Inf in gradients")
+            safe_grad = safe_model_state_dict(c_grad_dict[client_id])
+            has_nan_inf_grad = any(
+                not torch.equal(safe_grad[k], c_grad_dict[client_id][k]) for k in safe_grad.keys()
+            )
+            if has_nan_inf_grad:
+                logger.warning(f"NaN/Inf detected in gradients for client {client_id}. Using sanitized gradients.")
+                c_grad_dict[client_id] = safe_grad
+
+
+            # logger.info("Loading original model state before applying gradient")
+            mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
+
+            # logger.info("Applying gradient to model")
+            grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
+
+            # logger.info("Checking updated model state for NaN/Inf")
+            updated_state = mco_dict[client_id]["c_model"].state_dict()
+            safe_updated_state = safe_model_state_dict(updated_state)
+            has_nan_inf = any(
+                not torch.equal(safe_updated_state[k], updated_state[k])
+                for k in safe_updated_state.keys()
+            )
+            if has_nan_inf:
+                logger.warning(f"NaN/Inf detected in model state after update for client {client_id}. Reverting to previous state.")
+                mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
+                c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_grad_dict[client_id].items()}
+
+
+        except Exception as e:
+            logger.error(f"Error processing client {client_id} with attack {attack_method}: {e}")
+            mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])  # Revert to safe state
+            c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_sd_before[client_id].items()}  # Zero out gradients
+
     return c_grad_dict, foda_posterior
-
 
 def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num):
     logger.info(f"non-iid type: {noniid_type}")
@@ -337,8 +391,6 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
         logger.info(f"Client {client_id}: {counts}")
 
     return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
-
-
 
 
 
@@ -769,19 +821,38 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
     return test_loss, accuracy, per_class_accuracy, attack_success_rate
 
 
-def grad_add_to_model(model, lr, grad):
+def grad_add_to_model(model, lr, grad, update_bn_buffers=True):
+    """
+    Add gradients to model parameters with learning rate
+    
+    Args:
+        model: Model to update
+        lr: Learning rate
+        grad: Gradient dictionary
+        update_bn_buffers: Whether to update BatchNorm buffers (running_mean/var)
+                          num_batches_tracked is never updated
+    """
     model_sd = model.state_dict()
-    for key in model_sd.keys():
+    bn_buffer_keys = ['running_mean', 'running_var', 'num_batches_tracked']
+    
+    for key in model_sd:
         if key not in grad:
             continue
             
+        # Skip num_batches_tracked always
+        if 'num_batches_tracked' in key:
+            continue
+            
+        # Handle BN buffers according to flag
+        if any(buf in key for buf in ['running_mean', 'running_var']):
+            if not update_bn_buffers:
+                continue
+                
         if isinstance(grad[key], torch.Tensor):
-            # Ensure grad_to_add is on same device as model
             grad_to_add = (lr * grad[key].to(model_sd[key].device)).to(model_sd[key].dtype)
             model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
 
     model.load_state_dict(model_sd)
-
 
 
 def weight_to_model(model, weight):

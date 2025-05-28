@@ -289,7 +289,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         c_grad_dict, foda_posterior = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
                                    client_batch_size, dba_poisoning_per_batch, 
-                                   FedOda_class = foda, device=device)
+                                   fedoda_attacker = foda, device=device)
 
         server_after = flatten_model(mco_dict[-1]["c_model"].state_dict())
         server_delta = (server_after - server_before).norm()
@@ -414,12 +414,12 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         print("Elapsed Time this round:", "{:.2f} sec".format(time.time() - t1))
         logger.info(f"exp total running time: {datetime.timedelta(seconds=(time.time() - t0))}")
         
-        if iter % 10 == 0:
-            logger.info(f"every 10 iterations, normalize server model weights")
-            # normalize server model weights
-            mco_dict[-1]["c_model"].load_state_dict(
-                        soft_clip_weights(mco_dict[-1]["c_model"].state_dict(), clip_threshold=5.0)
-                    )
+        # if iter % 10 == 0:
+        #     logger.info(f"every 10 iterations, normalize server model weights")
+        #     # normalize server model weights
+        #     mco_dict[-1]["c_model"].load_state_dict(
+        #                 soft_clip_weights(mco_dict[-1]["c_model"].state_dict(), clip_threshold=5.0)
+        #             )
         
         # send main to all clients
         mco_dict = send_main_to_clients(client_num, mco_dict, device=device)
@@ -432,10 +432,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     path_c_model=f"{exp_dir}/c_model_{iter}.pt"
     torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
 
-    logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
-    logger.info(f"Experiment directory: {exp_dir}")
-    
-    
     # Extract FedOda attack metrics (if applicable)
     if foda:
         fedoda_metrics = sanitize_attack_metrics(foda.full_history)
@@ -443,6 +439,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         fedoda_metrics = None
 
     logger.info(f"fedoda_metrics: {fedoda_metrics}")
+    logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
+    logger.info(f"Experiment directory: {exp_dir}")
     logger.handlers.clear()
     
     plot_fl_results(params, exp_dir, 
