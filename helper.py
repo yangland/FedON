@@ -39,7 +39,8 @@ import torch.nn.functional as F
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, 
                     dba_poisoning_per_batch=0.2, fedoda_attacker=None, device=None):
-    foda_posterior = None  # initialize
+    foda_posterior = None
+    mpaf_attacker = None # initialize
     # Add at start of function
     torch.cuda.empty_cache()
     

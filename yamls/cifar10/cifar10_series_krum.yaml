@@ -23,9 +23,9 @@ fl_class_num: 10
 fl_task: 'cifar10'
 c_model: "ConvNet" #  "ResNet18", "VGG13_32", "SqueezeNet_32", "SimpleCNN_32"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
-dirichlet_alphas: [0.1, 0.5, 1.0]
+dirichlet_alphas: [0.1, 0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: ['LIE',  'MinMax', 'MinSum', 'FedOda']
+attack_methods: [ 'MPAF',  'LIE', 'MinMax', 'MinSum']
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
@@ -45,10 +45,10 @@ server_g_epochs: 1
 # FedOda parameters
 fedoda:
   E: 5
-  scaling_factor: 8
+  scaling_factor: 5
   reduce_factor: 0.9
   increase_factor: 1.05
-  threshold: 0.6
+  threshold: 0.5
 
 
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
