@@ -2,6 +2,7 @@ import torch
 from aggr.fltrust import modelsd2tensor
 from aggr.fedavg_median import fedavg
 import math
+from copy import deepcopy
 
 def krum_aggr(model_dict, f, m):
     client_ids = list(model_dict.keys())
@@ -10,16 +11,23 @@ def krum_aggr(model_dict, f, m):
     for client_id in client_ids:
         reveled_model_dict[client_id] = modelsd2tensor(model_dict[client_id])
 
-    multi_krum_m, krum_clients, client_weights = \
+    selected_clients_with_scores, krum_clients, client_weights = \
         krum(reveled_model_dict, f, m)
     
     krum_clients.sort()
     krum_model_dict = dict((client_id, model_dict[client_id]) for client_id in krum_clients)
-    new_weights = fedavg(krum_model_dict)
+    new_weights = average_tensor_dict(krum_model_dict)
     
-    return new_weights, krum_clients
+    return new_weights, krum_clients, selected_clients_with_scores
 
 
+def average_tensor_dict(tensor_dicts):
+    """Averages dicts of gradients (same format as state_dicts)"""
+    tensor_list = list(tensor_dicts.values())
+    avg = deepcopy(tensor_list[0])
+    for k in avg:
+        avg[k] = torch.stack([t[k].float() for t in tensor_list]).mean(0)
+    return avg
 
 # Machine Learning with Adversaries: Byzantine Tolerant Gradient Descent (Peva Blanchard)
 # https://papers.nips.cc/paper_files/paper/2017/hash/f4b9ec30ad9f68f89b29639786cb62ef-Abstract.html
@@ -39,17 +47,10 @@ def krum(model_sample_weight_dict, f, m):
     for name1, value1 in model_sample_weight_dict.items():
         for name2, value2 in model_sample_weight_dict.items():
             if name1 != name2:
-                # value1 = torch.flatten(value1)
-                # value2 = torch.flatten(value2)
-                value1 = torch.flatten(value1).float()
-                value2 = torch.flatten(value2).float()
-                value1 = value1.unsqueeze_(0)
-                value2 = value2.unsqueeze_(0)
+                dist = torch.norm(value1 - value2, p=2).item()
                 dist = torch.cdist(value1, value2, p=2)
-                # print("dist", dist)
                 l2_dist[name1].append(dist.item())
 
-    # print("l2_dist", l2_dist)
     for name, dists in l2_dist.items():
         # sum of first n-f-2 distances
         # print('dists', len(dists))
@@ -65,8 +66,8 @@ def krum(model_sample_weight_dict, f, m):
 
     # print("sorted_krum_scores", sorted_krum_scores)
 
-    multi_krum_m = sorted_krum_scores[:m]
-    krum_clients = [i[0] for i in multi_krum_m]
+    selected_clients_with_scores = sorted_krum_scores[:m]
+    krum_clients = [i[0] for i in selected_clients_with_scores]
     total_weights = n * 100
     ind_weight = total_weights / m
 
@@ -78,6 +79,4 @@ def krum(model_sample_weight_dict, f, m):
         else:
             client_weights[name] = 0
 
-    # print("client_weights", client_weights)
-
-    return multi_krum_m, krum_clients, client_weights
+    return selected_clients_with_scores, krum_clients, client_weights

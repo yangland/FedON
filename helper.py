@@ -37,8 +37,8 @@ import torch.nn.functional as F
 
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
-                    fl_data_dict, mco_dict, batch_size, 
-                    dba_poisoning_per_batch=0.2, fedoda_attacker=None, device=None):
+                    fl_data_dict, mco_dict, batch_size, dba_poisoning_per_batch=0.2, 
+                    fedoda_attacker=None, malicious_fraction=None, device=None):
     foda_posterior = None
     mpaf_attacker = None # initialize
     # Add at start of function
@@ -71,7 +71,7 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     # process for both benign and malicious clients
     c_grad_dict, foda_posterior = grad_process_c_model(mco_dict, client_selection, c_sd_before,
                                             malicious_client_ids, attack_method, fedoda_attacker,
-                                             foda_posterior, mpaf_attacker, device)
+                                             foda_posterior, mpaf_attacker, malicious_fraction, device)
 
     
     # Add before return cleanup memory
@@ -131,7 +131,7 @@ attack_magnitude_mapping = {
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, foda_posterior, mpaf_attacker, device):
+                         FedOda_class, foda_posterior, mpaf_attacker, malicious_fraction, device):
     c_grad_dict = {}
 
     # benign clients
@@ -152,79 +152,77 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     
     # malicious clients
     for client_id in malicious_client_ids:
-        try:
-            logger.info(f"Processing malicious client {client_id} with attack {attack_method}")
+        logger.info(f"Processing malicious client {client_id} with attack {attack_method}")
 
-            if attack_method == 'reverse_grad':
-                logger.info("Applying reverse_grad attack")
-                c_grad_dict[client_id] = model_weight_diff(
-                    c_sd_before[client_id], 
-                    mco_dict[client_id]["c_model"].state_dict(), 
-                    attack_magnitude
-                )
-            elif attack_method in ['backdoor', 'fakedata', 'label_perturbation', '2_label_flipping', 'clear_label_backdoor', 'dba']:
-                logger.info(f"Applying {attack_method} attack")
-                c_grad_dict[client_id] = model_weight_diff(
-                    mco_dict[client_id]["c_model"].state_dict(), 
-                    c_sd_before[client_id], 
-                    attack_magnitude
-                )
-            elif attack_method == 'LIE':
-                # logger.info("Applying LIE attack")
-                c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", Z_max=0.28)
-            elif attack_method == 'fang':
-                # logger.info("Applying fang attack")
-                c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-            elif attack_method == 'MinMax':
-                # logger.info("Applying MinMax attack")
-                c_grad_dict[client_id] = MinMax_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-            elif attack_method == 'MinSum':
-                # logger.info("Applying MinSum attack")
-                c_grad_dict[client_id] = MinSum_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
-            elif attack_method == 'MPAF':
-                # logger.info("Applying MPAF attack")
-                malicious_updates = mpaf_attacker(malicious_client_ids, mco_dict, magnitude=attack_magnitude)
-                for client_id in malicious_client_ids:
-                    c_grad_dict[client_id] = malicious_updates[client_id]
-            elif attack_method == 'FedOda':
-                # logger.info("Applying FedOda attack")
-                c_grad_dict[client_id] = foda_update_dict
-            else:
-                logger.info(f"Unknown attack method {attack_method}")
-
-            # logger.info("Checking for NaN/Inf in gradients")
-            safe_grad = safe_model_state_dict(c_grad_dict[client_id])
-            has_nan_inf_grad = any(
-                not torch.equal(safe_grad[k], c_grad_dict[client_id][k]) for k in safe_grad.keys()
+        if attack_method == 'reverse_grad':
+            logger.info("Applying reverse_grad attack")
+            c_grad_dict[client_id] = model_weight_diff(
+                c_sd_before[client_id], 
+                mco_dict[client_id]["c_model"].state_dict(), 
+                attack_magnitude
             )
-            if has_nan_inf_grad:
-                logger.warning(f"NaN/Inf detected in gradients for client {client_id}. Using sanitized gradients.")
-                c_grad_dict[client_id] = safe_grad
+        elif attack_method in ['backdoor', 'fakedata', 'label_perturbation', '2_label_flipping', 'clear_label_backdoor', 'dba']:
+            logger.info(f"Applying {attack_method} attack")
+            c_grad_dict[client_id] = model_weight_diff(
+                mco_dict[client_id]["c_model"].state_dict(), 
+                c_sd_before[client_id], 
+                attack_magnitude
+            )
+        elif attack_method == 'LIE':
+            # logger.info("Applying LIE attack")
+            c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", malicious_fraction = malicious_fraction)
+        elif attack_method == 'fang':
+            # logger.info("Applying fang attack")
+            c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+        elif attack_method == 'MinMax':
+            # logger.info("Applying MinMax attack")
+            c_grad_dict[client_id] = MinMax_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+        elif attack_method == 'MinSum':
+            # logger.info("Applying MinSum attack")
+            c_grad_dict[client_id] = MinSum_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
+        elif attack_method == 'MPAF':
+            # logger.info("Applying MPAF attack")
+            malicious_updates = mpaf_attacker(malicious_client_ids, mco_dict, magnitude=attack_magnitude)
+            for client_id in malicious_client_ids:
+                c_grad_dict[client_id] = malicious_updates[client_id]
+        elif attack_method == 'FedOda':
+            # logger.info("Applying FedOda attack")
+            c_grad_dict[client_id] = foda_update_dict
+        else:
+            logger.info(f"Unknown attack method {attack_method}")
+
+        # logger.info("Checking for NaN/Inf in gradients")
+        safe_grad = safe_model_state_dict(c_grad_dict[client_id])
+        has_nan_inf_grad = any(
+            not torch.equal(safe_grad[k], c_grad_dict[client_id][k]) for k in safe_grad.keys()
+        )
+        if has_nan_inf_grad:
+            logger.warning(f"NaN/Inf detected in gradients for client {client_id}. Using sanitized gradients.")
+            c_grad_dict[client_id] = safe_grad
 
 
-            # logger.info("Loading original model state before applying gradient")
+        # logger.info("Loading original model state before applying gradient")
+        mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
+
+        # logger.info("Applying gradient to model")
+        grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
+
+        # logger.info("Checking updated model state for NaN/Inf")
+        updated_state = mco_dict[client_id]["c_model"].state_dict()
+        safe_updated_state = safe_model_state_dict(updated_state)
+        has_nan_inf = any(
+            not torch.equal(safe_updated_state[k], updated_state[k])
+            for k in safe_updated_state.keys()
+        )
+        if has_nan_inf:
+            logger.warning(f"NaN/Inf detected in model state after update for client {client_id}. Reverting to previous state.")
             mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
+            c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_grad_dict[client_id].items()}
 
-            # logger.info("Applying gradient to model")
-            grad_add_to_model(mco_dict[client_id]["c_model"], lr=1, grad=c_grad_dict[client_id])
-
-            # logger.info("Checking updated model state for NaN/Inf")
-            updated_state = mco_dict[client_id]["c_model"].state_dict()
-            safe_updated_state = safe_model_state_dict(updated_state)
-            has_nan_inf = any(
-                not torch.equal(safe_updated_state[k], updated_state[k])
-                for k in safe_updated_state.keys()
-            )
-            if has_nan_inf:
-                logger.warning(f"NaN/Inf detected in model state after update for client {client_id}. Reverting to previous state.")
-                mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
-                c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_grad_dict[client_id].items()}
-
-
-        except Exception as e:
-            logger.error(f"Error processing client {client_id} with attack {attack_method}: {e}")
-            mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])  # Revert to safe state
-            c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_sd_before[client_id].items()}  # Zero out gradients
+        # except Exception as e:
+        #     logger.error(f"Error processing client {client_id} with attack {attack_method}: {e}")
+        #     mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])  # Revert to safe state
+        #     c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_sd_before[client_id].items()}  # Zero out gradients
 
     return c_grad_dict, foda_posterior
 
@@ -822,7 +820,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
     return test_loss, accuracy, per_class_accuracy, attack_success_rate
 
 
-def grad_add_to_model(model, lr, grad, update_bn_buffers=True):
+def grad_add_to_model(model, lr, grad, update_bn_buffers=True, update_batched_tracked=True):
     """
     Add gradients to model parameters with learning rate
     
@@ -842,7 +840,8 @@ def grad_add_to_model(model, lr, grad, update_bn_buffers=True):
             
         # Skip num_batches_tracked always
         if 'num_batches_tracked' in key:
-            continue
+            if not update_batched_tracked:
+                continue
             
         # Handle BN buffers according to flag
         if any(buf in key for buf in ['running_mean', 'running_var']):

@@ -25,7 +25,7 @@ c_model: "ConvNet" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alphas: [0.1, 0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: [ 'MPAF',  'LIE', 'MinMax', 'MinSum']
+attack_methods: [ 'LIE', 'MinMax', 'MinSum', 'MPAF', 'FedOda']
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
@@ -48,7 +48,7 @@ fedoda:
   scaling_factor: 5
   reduce_factor: 0.9
   increase_factor: 1.05
-  threshold: 0.5
+  threshold: 0.6
 
 
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"

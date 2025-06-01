@@ -8,11 +8,10 @@ from scipy.spatial.distance import cdist, euclidean
 from wassdistance import SinkhornDistance
 from aggr.fedavg_median import fedavg
 from collections import OrderedDict
-
-logger = logging.getLogger(__name__)
+from scipy.stats import norm  # For normal distribution CDF (phi function)
+from copy import deepcopy
+logger = logging.getLogger("individual_logging")
 logger.addHandler(logging.StreamHandler())
-
-
 
 
 def random_recolor(img, background, target_color, random_back=False, random_target=False, output_channel='L'):
@@ -203,7 +202,7 @@ def training_csv_logging(iter, clients_eval_dict, sr_index, related_candidate_me
     reso_csv.append_save_csv([iter] + list(avg_resos))
     
     
-def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
+def lie_attack_old(malicious_client_ids, mco_dict, model_type, Z_max):
     # based on paper: A little is enough: circumventing defenses for distributed learnin
     # https://dl.acm.org/doi/10.5555/3454287.3455062
     # attack method from a little is enough
@@ -235,6 +234,60 @@ def lie_attack(malicious_client_ids, mco_dict, model_type, Z_max):
 
             # Ensure same dtype and shape
             attacked_sd[layer_name] = attacked_value.to(param.dtype)
+
+    return attacked_sd
+
+def lie_attack(malicious_client_ids, mco_dict, model_type, malicious_fraction):
+    """
+    Perform the LIE attack based on global malicious client percentage.
+    
+    Args:
+        malicious_client_ids: List of malicious client IDs in current round
+        mco_dict: Dictionary containing client models in current round
+        model_type: Type of model to attack
+        malicious_fraction: Global percentage of malicious workers (0-1)
+    """
+    # Calculate Z_max based on global malicious percentage
+    # Calculate needed supporters using formula: (total/2 + 1) - malicious_count
+    # Here we use the global malicious percentage to compute expected behavior
+    # For the calculation, we assume the same ratio holds in the selected clients
+
+    total = 100
+    mali_num = int(total * malicious_fraction)
+    supporters_needed = int(total/2 + 1) - mali_num
+    phi_z = (total - mali_num - supporters_needed)/(total - mali_num)
+    
+    # Get Z_max from normal distribution inverse CDF
+    try:
+        Z_max = abs(norm.ppf(phi_z))
+    except:
+        # Fallback values
+        Z_max = 1.43  # Default value from paper example
+    
+    logger.info(f"[LIE] based on malicious_fraction: {malicious_fraction}, Z_max: {Z_max:.4f}")
+    
+    # Get the first malicious model to access its named_parameters
+    model = mco_dict[malicious_client_ids[0]][model_type]
+    attacked_sd = model.state_dict()  # Start with original state
+    
+    with torch.no_grad():
+        # Get mean and std across all malicious models for each parameter
+        param_stats = {}
+        for name, param in model.named_parameters():
+            # Stack this parameter from all malicious models
+            param_values = [mco_dict[client_id][model_type].state_dict()[name].float() 
+                          for client_id in malicious_client_ids]
+            stacked = torch.stack(param_values)
+            param_stats[name] = {
+                'mean': torch.mean(stacked, dim=0),
+                'std': torch.std(stacked, dim=0, correction=0)
+            }
+
+        # Apply attack only to trainable parameters
+        for name, param in model.named_parameters():
+            stats = param_stats[name]
+            attacked_value = stats['mean'] - Z_max * stats['std']
+            attacked_sd[name] = attacked_value.to(param.dtype)
 
     return attacked_sd
 
@@ -317,6 +370,7 @@ def fang_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, dev
     
     return attacked_sd
 
+
 def update_model_with_malicious_gradient(state_dict, server_state, mal_update):
     new_state_dict = {}
     idx = 0
@@ -329,9 +383,11 @@ def update_model_with_malicious_gradient(state_dict, server_state, mal_update):
         numel = state_dict[name].numel()
         user_grad = mal_update[idx:idx + numel].reshape(state_dict[name].shape)
         new_state_dict[name] = server_state[name] + user_grad
-        idx += numel
+        idx += numel  # Only increment idx for used gradients
 
     return new_state_dict
+
+
 
 def MinMax_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, device, dev_type ='std', threshold=30):
     # from FedREDefense code
@@ -359,6 +415,7 @@ def MinMax_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, d
     threshold_diff = 1e-5
     lamda_fail = lamda
     lamda_succ = 0
+    
     if len(all_updates) != 1:
         distances = []
         for update in all_updates:
@@ -693,3 +750,12 @@ def safe_model_state_dict(state_dict):
         else:
             safe_sd[name] = param
     return safe_sd
+
+
+def average_tensor_dict(tensor_dicts):
+    """Averages dicts of gradients (same format as state_dicts)"""
+    tensor_list = list(tensor_dicts.values())
+    avg = deepcopy(tensor_list[0])
+    for k in avg:
+        avg[k] = torch.stack([t[k] for t in tensor_list]).mean(0)
+    return avg

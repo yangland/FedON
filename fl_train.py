@@ -43,6 +43,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     
     client_num = params['n']
     malicious_num = params['m']
+    malicious_fraction = malicious_num/client_num
     global device
     device  = torch.device(f"cuda:{params['cuda_device']}")
     noniid_type = params['noniid_type']
@@ -90,6 +91,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     fltrust_root_iid = params['fltrust_root_iid']
     dba_poisoning_per_batch = params.get('dba_poisoning_per_batch', 0.2)
     client_list = list(range(client_num))
+    
 
     try:
         os.makedirs(exp_dir)
@@ -123,7 +125,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     # control n and label_skew_alpha or p-degree can get Desired non-iid and fully use dataset
     fl_data_dict, labels_per_client_dict, label_count_per_client_dict = \
         create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num)
-
+    # logger.info(f"label_count_per_client_dict: {label_count_per_client_dict}")
+    
     # clients selection per iteration
     clients_selection_csv_header = ["iter"] + client_list
     clients_selection_csv = CsvLogging(f"{timestamp}_clients_selections", exp_dir, clients_selection_csv_header)
@@ -289,7 +292,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         c_grad_dict, foda_posterior = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict, 
                                    client_batch_size, dba_poisoning_per_batch, 
-                                   fedoda_attacker = foda, device=device)
+                                   fedoda_attacker = foda, malicious_fraction= malicious_fraction,
+                                   device=device)
 
         server_after = flatten_model(mco_dict[-1]["c_model"].state_dict())
         server_delta = (server_after - server_before).norm()
@@ -301,30 +305,28 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 c_grad = fedavg(c_grad_dict)
             elif aggr == 'geometric_median':
                 c_grad, geo_weights = geo_med_aggr(c_grad_dict, device)
-                print("geo_weights", geo_weights)
                 c_weights_csv.append_save_csv(
                     [iter] + [v for k, v in sorted(geo_weights.items())]  # Remove .item() since v is already a float
                 )
             elif aggr == 'coordinate_wise_median':
                 c_grad = coordinate_wise_median(c_grad_dict)
             elif aggr == 'trimmed_mean':
-                # best case server knows malicious client num
-                m = client_num - malicious_num
+                m = clients_per_iter//2 - 1 
                 c_grad = trimmed_mean(c_grad_dict, m)
             elif aggr == 'krum':
                 # best case half the cliets are malicious
                 # orgainal Krum select one client
-                f = client_num//2 - 1
+                f = clients_per_iter//2 - 1
                 m = 1 # single krum
-                c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
+                c_grad, krum_clients, selected_clients_with_scores = krum_aggr(c_grad_dict, f, m)
                 benign_client_ids = krum_clients
-                logger.info(f"krum clients: {krum_clients}")
+                logger.info(f"krum clients: {krum_clients}, scores: {selected_clients_with_scores}")
             elif aggr == "multi-krum":
-                f = client_num//2 - 1
-                m = client_num//2 - 1 # multi krum
-                c_grad, krum_clients = krum_aggr(c_grad_dict, f, m)
+                f = clients_per_iter//2 - 1
+                m = clients_per_iter//2 - 1 # multi krum
+                c_grad, krum_clients, selected_clients_with_scores = krum_aggr(c_grad_dict, f, m)
                 benign_client_ids = krum_clients
-                logger.info(f"multi-krum clients: {krum_clients}")                       
+                logger.info(f"multi-krum clients: {krum_clients}, scores: {selected_clients_with_scores}")                     
             elif aggr == 'flame':
                 # flame works with model weight, convert grad to model weight
                 server_c_sd = deepcopy(mco_dict[-1]["c_model"].state_dict())
@@ -359,11 +361,13 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                         [iter] + [v.item() for k, v in sorted(fltrust_weights.items())]
                     )
                 c_grad = grad_weighted_sum(c_grad_dict, fltrust_weights)
-            
-            
+                       
             # Update the models in mco_dict directly
-            grad_add_to_model(mco_dict[-1]["c_model"], aggr_c_lr, c_grad) 
-            
+            grad_add_to_model(mco_dict[-1]["c_model"], 
+                              aggr_c_lr, 
+                              c_grad,
+                              update_bn_buffers=True, 
+                              update_batched_tracked=True)         
         
         # for targeted attack test on one of the malicious client
         # validation on server's C model
@@ -378,7 +382,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             logger.info(f"iter {iter}: {malicious_client_ids[0]} client_asr: {client_asr.values()}")
 
         # validation on server's C model
-        test_loss, test_accuracy, per_class_accuracy,  attack_success_rate = fl_validation(mco_dict[-1]["c_model"], 
+        test_loss, test_accuracy, per_class_accuracy, attack_success_rate = fl_validation(mco_dict[-1]["c_model"], 
                                                                             mco_dict[-1]["c_criterion"], 
                                                                             fl_test, 
                                                                             server_batch_size,
@@ -402,6 +406,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             mistake_rate = len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
             mistakes_csv.append_save_csv([iter, mistake_rate, foda_posterior])  # Add posterior here
             mistake_history.append(mistake_rate)
+            logger.info(f"{aggr}-{attack_method} mistake_rate = {mistake_rate*100:.2f}%")
 
             if attack_method == 'FedOda':
                 if foda_posterior==None: 
