@@ -71,7 +71,8 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     # process for both benign and malicious clients
     c_grad_dict, foda_posterior = grad_process_c_model(mco_dict, client_selection, c_sd_before,
                                             malicious_client_ids, attack_method, fedoda_attacker,
-                                             foda_posterior, mpaf_attacker, malicious_fraction, device)
+                                             foda_posterior, mpaf_attacker, malicious_fraction,
+                                             batch_size, c_epochs, device)
 
     
     # Add before return cleanup memory
@@ -131,7 +132,8 @@ attack_magnitude_mapping = {
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, foda_posterior, mpaf_attacker, malicious_fraction, device):
+                         FedOda_class, foda_posterior, mpaf_attacker, malicious_fraction, 
+                         batch_size, c_epochs, device):
     c_grad_dict = {}
 
     # benign clients
@@ -146,7 +148,11 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     
     if attack_method == 'FedOda':
         if FedOda_class is not None:
-            foda_update_dict, malicious_update, foda_posterior = FedOda_class.attack()
+            foda_update_dict, malicious_update, foda_posterior = \
+                FedOda_class.attack(sample_num=3, 
+                                    batch_size=batch_size, 
+                                    mco_dict=mco_dict, 
+                                    c_epochs=c_epochs)
         else:
             raise ValueError("FedOda_class is not initialized.")
     

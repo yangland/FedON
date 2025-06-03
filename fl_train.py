@@ -191,6 +191,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         pooled_data = []
         malicious_data_lengths = []
     
+        # Create a dictionary containing only malicious clients' data
+        fl_mali_data_dict = {client_id: client_data 
+                            for client_id, client_data in fl_data_dict.items() 
+                            if client_id in malicious_client_ids}
+    
         for client_id, client_data in fl_data_dict.items():
             if client_id in malicious_client_ids:
                 pooled_data.append(client_data)
@@ -221,7 +226,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     pooled_loader=pooled_loader,
                     vali_loader=original_vali_loader,
                     total_clients_num=client_num,
-                    malicious_clients_num=len(malicious_client_ids),
+                    malicious_client_ids=malicious_client_ids,
+                    fl_mali_data_dict = fl_mali_data_dict,
                     E=params['fedoda']['E'],
                     scaling_factor=params['fedoda']['scaling_factor'],
                     reduce_factor=params['fedoda']['reduce_factor'],
