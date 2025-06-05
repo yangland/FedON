@@ -21,21 +21,21 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
-c_model: "SimpleCNN_28" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
+c_model: "ConvNet" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alphas: [0.1, 0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: [ 'MPAF',  'LIE', 'MinMax', 'MinSum']
+attack_methods: ['none',  'FedOda', 'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',]
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
 image_size: [1, 28, 28]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.01
+c_lr: 0.00001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 300
+fl_iter_num: 200
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
