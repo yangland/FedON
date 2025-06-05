@@ -975,7 +975,8 @@ class FedOda:
         return v
 
 
-    def log_attack_statistics(self, logger, benign_update, malicious_update, avg_l2_dist, avg_cos_distance, avg_full_model_cos, server_model):
+    def log_attack_statistics(self, logger, benign_update, malicious_update, avg_l2_dist, avg_cos_distance,
+                                avg_full_model_cos, server_model): 
         mali_norm = torch.norm(malicious_update).item()
         benign_norm = torch.norm(benign_update).item()
         l2_dist = torch.norm(malicious_update - benign_update).item()
@@ -1068,12 +1069,6 @@ class FedOda:
             self.logger.info(f"[FedOda][BO] Mapped cos domain: [{cos_dist_low_bound:.4f}, {cos_dist_dirs:.4f}]")
             self.scaling_cos = log2_map(norm_scaling_cos, cos_dist_low_bound, cos_dist_dirs)
 
-            # Append the new metrics to history
-            self.full_history["norm_scaling_l2"].append(norm_scaling_l2)
-            self.full_history["norm_scaling_cos"].append(norm_scaling_cos)
-            self.full_history["mapped_scaling_l2"].append(self.scaling_l2)
-            self.full_history["mapped_scaling_cos"].append(self.scaling_cos)
-
             # 4. Assign and apply
             self.epsilon = self.scaling_l2 * avg_l2_norm
 
@@ -1115,12 +1110,6 @@ class FedOda:
             )
             malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
 
-            # For BI mode, we might not have all these values, so we can append None or some default
-            self.full_history["norm_scaling_l2"].append(None)
-            self.full_history["norm_scaling_cos"].append(None)
-            self.full_history["mapped_scaling_l2"].append(None)
-            self.full_history["mapped_scaling_cos"].append(None)
-
         val_accuracy = self._evaluate_malicious_update(malicious_update)
         self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.4f}")
 
@@ -1135,8 +1124,23 @@ class FedOda:
             avg_l2_dist=avg_l2_distance,
             avg_cos_distance=avg_cos_distance,
             avg_full_model_cos=avg_full_model_cos,
-            server_model=self.server_model
+            server_model=self.server_model,
         )
+        
+        self.log_to_full_history(
+            s_b=None,
+            s_hat=None,
+            benign_norm=simulated_norm,
+            server_update_norm=None,
+            cos_d1=None, cos_d2=None, cos_d3=None, cos_d4=None,
+            l2_d1=None, l2_d2=None, l2_d3=None, l2_d4=None,
+            l=None,
+            posterior=None,
+            norm_scaling_cos=norm_scaling_cos if self.attack_mode == "BO" else None,
+            norm_scaling_l2=norm_scaling_l2  if self.attack_mode == "BO" else None,
+            mapped_scaling_cos=self.scaling_cos if self.attack_mode == "BO" else None,
+            mapped_scaling_l2=self.scaling_l2 if self.attack_mode == "BO" else None,
+            )
 
         self.prev_s_m = self.current_s_m
         posterior = None if self.attack_mode == "BO" else 1  # Optional: handle posterior from BI inference if needed
@@ -1257,16 +1261,7 @@ class FedOda:
             if len(self.posterior_history) > self.E:
                 self.posterior_history.pop(0)
 
-            self.log_to_full_history(
-                s_b=None,
-                s_hat=None,
-                benign_norm=simulated_norm,
-                server_update_norm=delta_s.norm().item(),
-                cos_d1=cos_d1, cos_d2=cos_d2, cos_d3=cos_d3, cos_d4=cos_d4,
-                l2_d1=l2_d1, l2_d2=l2_d2, l2_d3=l2_d3, l2_d4=l2_d4,
-                l=mean_log_likelihood if self.inference_mode == "l2" else None,
-                posterior=posterior
-            )
+
 
             if self.inference_mode in ['l2', 'cos', 'sign', 'validation']:
                 valid_posteriors = [p for p in self.posterior_history if p is not None]
@@ -1350,7 +1345,8 @@ class FedOda:
                             benign_norm=None, server_update_norm=None,
                             cos_d1=None, cos_d2=None, cos_d3=None, cos_d4=None,
                             l2_d1=None, l2_d2=None, l2_d3=None, l2_d4=None,
-                            l=None, posterior=None):
+                            l=None, posterior=None, norm_scaling_l2=None, norm_scaling_cos=None,
+                            mapped_scaling_l2=None, mapped_scaling_cos=None):
         """
         Logs a single iteration's key metrics to self.full_history.
         """
@@ -1362,7 +1358,9 @@ class FedOda:
                 "cos_d1": [], "cos_d2": [], "cos_d3": [], "cos_d4": [],
                 "l2_d1": [], "l2_d2": [], "l2_d3": [], "l2_d4": [],
                 "mean_log_likelihood": [], "posterior": [],
-                "scaling_factor": [], "epsilon": []
+                "scaling_factor": [], "epsilon": [],
+                "norm_scaling_l2": [], "norm_scaling_cos": [],
+                "mapped_scaling_l2": [], "mapped_scaling_cos": []
             }
 
         self.full_history["s_b"].append(s_b)
@@ -1381,6 +1379,10 @@ class FedOda:
         self.full_history["posterior"].append(posterior)
         self.full_history["scaling_factor"].append(self.scaling_factor)
         self.full_history["epsilon"].append(self.epsilon)
+        self.full_history["norm_scaling_l2"].append(norm_scaling_l2)
+        self.full_history["norm_scaling_cos"].append(norm_scaling_cos)
+        self.full_history["mapped_scaling_l2"].append(mapped_scaling_l2)
+        self.full_history["mapped_scaling_cos"].append(mapped_scaling_cos) 
 
 
 # Utility

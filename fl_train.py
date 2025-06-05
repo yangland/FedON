@@ -446,6 +446,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     # Extract FedOda attack metrics (if applicable)
     if foda:
         fedoda_metrics = sanitize_attack_metrics(foda.full_history)
+        logger.info(f"FedOda metrics1: {fedoda_metrics}")
     else:
         fedoda_metrics = None
 
@@ -523,8 +524,13 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
 
         # --- Plot full history from FedOda ---
         if fedoda_metrics:
+            print("\nDEBUG: FedOda metrics keys:", fedoda_metrics.keys())  # Check available keys
+            print("DEBUG: norm_scaling_l2 values:", fedoda_metrics.get("norm_scaling_l2", "MISSING"))
+            print("DEBUG: mapped_scaling_l2 values:", fedoda_metrics.get("mapped_scaling_l2", "MISSING"))
+            
+            
             def try_get(key): return fedoda_metrics.get(key, [])
-
+            
             # Group 1: s_b and s_hat
             plot_multi_curves(
                 {
@@ -608,26 +614,26 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             )
 
 
-            # Group 7: Normalized scaling factors (BO suggestions)
+            # Group 7: Normalized scaling factors
             plot_twin_curves(
                 {
-                    "norm_scaling_l2": try_get("norm_scaling_l2"),
-                    "norm_scaling_cos": try_get("norm_scaling_cos")
+                    "L2 Scaling (norm)": fedoda_metrics["norm_scaling_l2"],
+                    "Cos Scaling (norm)": fedoda_metrics["norm_scaling_cos"]
                 },
-                title="Bayesian Optimization: Normalized Scaling Factors",
+                title="BO: Normalized Scaling Factors",
                 filename="bo_normalized_scaling",
                 save_dir=plots_dir,
                 ylabel1="L2 Scaling (normalized)",
                 ylabel2="Cosine Scaling (normalized)"
             )
 
-            # Group 8: Mapped scaling factors (actual values)
+            # Group 8: Mapped scaling factors
             plot_twin_curves(
                 {
-                    "mapped_scaling_l2": try_get("mapped_scaling_l2"),
-                    "mapped_scaling_cos": try_get("mapped_scaling_cos")
+                    "L2 Scaling (mapped)": fedoda_metrics["mapped_scaling_l2"],
+                    "Cos Scaling (mapped)": fedoda_metrics["mapped_scaling_cos"]
                 },
-                title="Bayesian Optimization: Mapped Scaling Factors",
+                title="BO: Mapped Scaling Factors",
                 filename="bo_mapped_scaling",
                 save_dir=plots_dir,
                 ylabel1="L2 Scaling (mapped)",

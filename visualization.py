@@ -151,67 +151,54 @@ def plot_multi_curves(data_dict, title, filename, save_dir):
     plt.savefig(os.path.join(save_dir, f"{filename}.png"))
     plt.close()
 
-def plot_twin_curves(data_dict, title, filename, save_dir):
-    """
-    Plot multiple curves with dual y-axes if needed.
 
-    Args:
-        data_dict (dict): Keys are labels, values are lists of data points.
-        title (str): Plot title.
-        filename (str): File name (no extension).
-        save_dir (str): Directory to save the plot.
-    """
-    if len(data_dict) != 2:
-        raise ValueError("This function currently only supports exactly 2 curves for dual y-axes plotting")
-    
-    # Create a larger figure (wider)
-    fig, ax1 = plt.subplots(figsize=(12, 6))  # Width=12, Height=6
-    
-    # Get the two items from the dictionary
-    items = list(data_dict.items())
-    label1, values1 = items[0]
-    label2, values2 = items[1]
+def plot_twin_curves(data_dict, title, filename, save_dir, 
+                    ylabel1="Left Y-Axis", ylabel2="Right Y-Axis"):
+    plt.figure(figsize=(10, 6))
     
     # Plot first curve
-    if values1 is not None and any(v is not None for v in values1):
-        color = 'tab:red'
-        ax1.set_xlabel("Iterations")
-        ax1.set_ylabel(label1, color=color)
-        ax1.plot(values1, color=color, label=label1)
-        ax1.tick_params(axis='y', labelcolor=color)
+    if len(data_dict) < 1:
+        print(f"WARNING: No data to plot for {title}")
+        return
     
-    # Create second y-axis
-    ax2 = ax1.twinx()
+    # Get first key-value pair
+    key1, values1 = next(iter(data_dict.items()))
+    color1 = 'tab:blue'
+    ax1 = plt.gca()
+    line1, = ax1.plot(values1, label=key1, color=color1)
+    ax1.set_xlabel('Round')
+    ax1.set_ylabel(ylabel1, color=color1)
+    ax1.tick_params(axis='y', labelcolor=color1)
     
-    # Plot second curve
-    if values2 is not None and any(v is not None for v in values2):
-        color = 'tab:blue'
-        ax2.set_ylabel(label2, color=color)
-        ax2.plot(values2, color=color, label=label2)
-        ax2.tick_params(axis='y', labelcolor=color)
+    # Plot second curve if exists
+    if len(data_dict) > 1:
+        key2, values2 = list(data_dict.items())[1]
+        color2 = 'tab:red'
+        ax2 = ax1.twinx()
+        line2, = ax2.plot(values2, label=key2, color=color2)
+        ax2.set_ylabel(ylabel2, color=color2)
+        ax2.tick_params(axis='y', labelcolor=color2)
+        
+        # Only create legend if we have valid labels
+        if key1 and key2:
+            plt.legend([line1, line2], [key1, key2])
+    else:
+        if key1:
+            plt.legend([line1], [key1])
     
-    # Add title and grid
     plt.title(title)
-    ax1.grid(True)
+    plt.tight_layout()
     
-    # Combine legends from both axes
-    lines1, labels1 = ax1.get_legend_handles_labels()
-    lines2, labels2 = ax2.get_legend_handles_labels()
+    # Ensure directory exists
+    os.makedirs(save_dir, exist_ok=True)
     
-    # Add legend in the best location
-    ax1.legend(lines1 + lines2, labels1 + labels2, 
-              loc='best', 
-              framealpha=1.0)
-    
-    # Adjust layout with padding
-    plt.tight_layout(pad=2.0)  # Add extra padding around the plot
-    
-    # Save with tight bounding box
-    plt.savefig(os.path.join(save_dir, f"{filename}.png"), 
-                bbox_inches='tight', 
-                dpi=300)  # Higher quality
+    # Save plot
+    save_path = os.path.join(save_dir, f"{filename}.png")
+    plt.savefig(save_path)
+    print(f"DEBUG: Saved plot to {save_path}")  # Confirmation message
     plt.close()
-
+    
+    
 def per_class_accuracy_plot(per_class_acc_vail_hist, filename, title, save_dir):
     iters = len(per_class_acc_vail_hist)
     class_ids = per_class_acc_vail_hist[0].keys()
