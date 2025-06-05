@@ -608,6 +608,32 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             )
 
 
+            # Group 7: Normalized scaling factors (BO suggestions)
+            plot_twin_curves(
+                {
+                    "norm_scaling_l2": try_get("norm_scaling_l2"),
+                    "norm_scaling_cos": try_get("norm_scaling_cos")
+                },
+                title="Bayesian Optimization: Normalized Scaling Factors",
+                filename="bo_normalized_scaling",
+                save_dir=plots_dir,
+                ylabel1="L2 Scaling (normalized)",
+                ylabel2="Cosine Scaling (normalized)"
+            )
+
+            # Group 8: Mapped scaling factors (actual values)
+            plot_twin_curves(
+                {
+                    "mapped_scaling_l2": try_get("mapped_scaling_l2"),
+                    "mapped_scaling_cos": try_get("mapped_scaling_cos")
+                },
+                title="Bayesian Optimization: Mapped Scaling Factors",
+                filename="bo_mapped_scaling",
+                save_dir=plots_dir,
+                ylabel1="L2 Scaling (mapped)",
+                ylabel2="Cosine Scaling (mapped)"
+            )
+
     except Exception as e:
         logger.info(f"Plotting error: {e}")
 

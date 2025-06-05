@@ -10,6 +10,11 @@ from aggr.fedavg_median import fedavg
 from collections import OrderedDict
 from scipy.stats import norm  # For normal distribution CDF (phi function)
 from copy import deepcopy
+from torch.utils.data import DataLoader, Subset, ConcatDataset
+from collections import defaultdict, Counter
+import random
+import torch
+
 logger = logging.getLogger("individual_logging")
 logger.addHandler(logging.StreamHandler())
 
@@ -759,3 +764,103 @@ def average_tensor_dict(tensor_dicts):
     for k in avg:
         avg[k] = torch.stack([t[k] for t in tensor_list]).mean(0)
     return avg
+
+
+def extract_labels(dataset):
+    """
+    Extract labels from a dataset (supports Subset, ConcatDataset, tuple/list/dict items).
+    Returns a list of labels corresponding to dataset indices.
+    """
+    from torch.utils.data import Subset, ConcatDataset
+    from collections.abc import Sequence
+
+    if isinstance(dataset, Subset):
+        parent_labels = extract_labels(dataset.dataset)
+        return [parent_labels[i] for i in dataset.indices]
+
+    elif isinstance(dataset, ConcatDataset):
+        labels = []
+        for sub_dataset in dataset.datasets:
+            labels.extend(extract_labels(sub_dataset))
+        return labels
+
+    elif hasattr(dataset, 'targets'):
+        return list(dataset.targets)
+
+    elif hasattr(dataset, 'labels'):
+        return list(dataset.labels)
+
+    else:
+        # Fallback: try to extract labels from items
+        try:
+            labels = []
+            for i in range(len(dataset)):
+                item = dataset[i]
+
+                # DEBUG: Print a few items
+                if i < 3:
+                    # print(f"[DEBUG] dataset[{i}] type: {type(item)}")
+                    # print(f"[DEBUG] dataset[{i}] content: {item}")
+                    pass
+                # Handle tuple: (data, label) or (data, label, ...)
+                if isinstance(item, tuple) and len(item) >= 2:
+                    labels.append(item[1])
+
+                # Handle list: [data, label] or [data, label, ...]
+                elif isinstance(item, list) and len(item) >= 2:
+                    labels.append(item[1])
+
+                # Handle dict with 'label' or 'target'
+                elif isinstance(item, dict):
+                    if 'label' in item:
+                        labels.append(item['label'])
+                    elif 'target' in item:
+                        labels.append(item['target'])
+                    else:
+                        raise ValueError("Dict item does not contain label or target key.")
+
+                else:
+                    raise ValueError("Cannot extract label from item")
+
+            return labels
+
+        except Exception as e:
+            raise ValueError(f"Unable to extract labels from dataset: {e}")
+
+
+def create_balanced_loader(dataset, batch_size=64, max_samples_per_class=None, shuffle=True):
+    """
+    Create a balanced DataLoader from a dataset such that each class has (up to) the same number of samples.
+    """
+    targets = extract_labels(dataset)
+
+    class_to_indices = defaultdict(list)
+    for idx, label in enumerate(targets):
+        class_to_indices[label].append(idx)
+
+    class_counts = {cls: len(idxs) for cls, idxs in class_to_indices.items()}
+    min_count = min(class_counts.values())
+
+    if max_samples_per_class is None:
+        samples_per_class = min_count
+    else:
+        samples_per_class = min(min_count, max_samples_per_class)
+
+    balanced_indices = []
+    for cls, idxs in class_to_indices.items():
+        if len(idxs) >= samples_per_class:
+            selected = random.sample(idxs, samples_per_class)
+        else:
+            selected = idxs  # not enough samples
+        balanced_indices.extend(selected)
+
+    if shuffle:
+        random.shuffle(balanced_indices)
+
+    # Log label distribution
+    balanced_labels = [targets[i] for i in balanced_indices]
+    print(f"[Balanced Loader] Label distribution: {dict(Counter(balanced_labels))}")
+
+    balanced_subset = Subset(dataset, balanced_indices)
+    return DataLoader(balanced_subset, batch_size=batch_size, shuffle=shuffle)
+
