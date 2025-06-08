@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 from utils_attack import vector_to_state_dict, flatten_model, log2_map_from_tanh
-
+import numpy as np
 
 def ppo_attack(
     fedoda,
@@ -61,7 +61,7 @@ def ppo_attack(
 
     # === Rewards ===
     beta = 0.05
-    r1 = (1 - val_accuracy) * (1 - torch.exp(-beta * t))
+    r1 = (1 - val_accuracy) * (1 - np.exp(-beta * t))
     r2 = prev_acc - val_accuracy
     r3 = fedoda.compute_attack_influence_r3() or 0.0
 
