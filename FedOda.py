@@ -12,7 +12,7 @@ import math
 from skopt import Optimizer
 from skopt.space import Real
 from utilities import create_balanced_loader
-
+import numpy as np
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
@@ -44,7 +44,9 @@ class FedOda:
         self.current_s_m = None
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
-        self.attack_mode = "BO" # 'BO', "BI"
+        self.attack_mode = "PPO" # 'BO', "BI", "PPO"
+        self.ppo_mode = "MO"  # Options: "MO" for Multi-Objective, "scalar" for regular PPO
+
         
         # Create the Bayesian Optimizer
         if self.attack_mode == "BO":
@@ -409,6 +411,173 @@ class FedOda:
         self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
 
         return posterior, mean_log_likelihood
+
+
+    def _ppo_attack(self, round_number, prev_acc, avg_cos_distance, avg_l2_distance,
+                    avg_update_norm, avg_full_model_cos, mali_direction, benign_update):
+        """
+        PPO-guided malicious update generation (supports scalar and multi-objective PPO).
+
+        Args:
+            round_number (int): Current FL round index.
+            prev_acc (float): Previous malicious validation accuracy.
+            avg_cos_distance (float): Average cosine distance from benign updates.
+            avg_l2_distance (float): Average L2 distance from benign updates.
+            avg_update_norm (float): Norm of average benign update.
+            avg_full_model_cos (float): Cosine similarity of malicious direction w.r.t full model update.
+            mali_direction (torch.Tensor): Direction of the malicious update.
+            benign_update (torch.Tensor): Aggregated benign update vector.
+
+        Returns:
+            malicious_update_dict (dict): Malicious model update in state_dict format.
+            malicious_update (torch.Tensor): Malicious update vector.
+            reward (float or torch.Tensor): Scalar or vector reward depending on PPO mode.
+        """
+
+        self.logger.info(f"[FedOda][PPO] Starting PPO attack — Mode: {self.ppo_mode}")
+
+        # === Step 1: Construct PPO State Vector ===
+        t = round_number + 1  # for reward shaping
+        state = torch.tensor([
+            prev_acc,
+            avg_cos_distance,
+            avg_l2_distance,
+            round_number / 100.0  # normalized round
+        ], dtype=torch.float32)
+
+        # === Step 2: Select Action from PPO Agent ===
+        with torch.no_grad():
+            action = self.ppo_agent.select_action(state)  # expects 2D continuous action: [l2_scale, cos_scale]
+
+        norm_scaling_l2 = action[0].item()
+        norm_scaling_cos = action[1].item()
+
+        # === Step 3: Map Actions to Real Scaling Factors ===
+        self.scaling_l2 = log2_map(norm_scaling_l2, 0.5, 20.0)
+        cos_dist_low_bound = avg_cos_distance * 0.9  # to prevent too small values
+        self.scaling_cos = log2_map(norm_scaling_cos, cos_dist_low_bound, avg_cos_distance)
+
+        self.epsilon = self.scaling_l2 * avg_update_norm
+
+        # === Step 4: Craft Malicious Update via PGD ===
+        malicious_update = self.mali_update_craft_l2_cos(
+            model=self.server_model,
+            base_update=benign_update,
+            target_direction=mali_direction,
+            scaling_cos=self.scaling_cos,
+            epsilon=self.epsilon,
+            max_iters=10,
+            alpha=1e-2
+        )
+
+        malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
+
+        # === Step 5: Evaluate Malicious Update ===
+        attacked_model = self.apply_update_to_model(self.server_model, malicious_update)
+        val_accuracy = self.validate(attacked_model, self.pooled_balanced_loader)
+        self.val_acc_history.append(val_accuracy)
+
+        # === Step 6: Compute Reward Components ===
+        beta = 0.05
+        r1 = (1 - val_accuracy) * (1 - np.exp(-beta * t))      # long-term degradation
+        r2 = prev_acc - val_accuracy                        # immediate damage
+        r3 = avg_full_model_cos / (avg_cos_distance + 1e-8) # influence on aggregation
+
+        # === Step 7: Reward Based on PPO Mode ===
+        if self.ppo_mode == "MO":
+            # Multi-objective PPO: reward is a vector
+            reward = torch.tensor([r1, r2, r3], dtype=torch.float32)
+            self.logger.info(f"[FedOda][PPO][MO] r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f}")
+        else:
+            # Scalar PPO: weighted sum of objectives
+            reward = 0.6 * r1 + 0.3 * r2 + 0.1 * r3
+            self.logger.info(f"[FedOda][PPO][Scalar] Reward={reward:.4f} (r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f})")
+
+        # === Step 8: Store Experience to PPO Memory ===
+        self.ppo_episode_memory.append((state, action, reward))
+
+        # === Step 9: Convert Update to Server-Compatible Format ===
+        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+
+        return malicious_update_dict, malicious_update, reward
+
+
+    def mali_update_craft_l2_cos(self, model, base_update, target_direction, 
+                                scaling_cos, epsilon, max_iters=10, alpha=1e-2,
+                                harm_threshold=0.01, retry_limit=3):
+        """
+        PGD-based malicious update crafting within L2 + cosine constraints,
+        ensuring the final update degrades model accuracy (harmful).
+
+        Args:
+            model (nn.Module): The server model to attack.
+            base_update (torch.Tensor): The benign average update vector.
+            target_direction (torch.Tensor): Malicious direction to optimize.
+            scaling_cos (float): Cosine similarity threshold.
+            epsilon (float): L2-norm constraint.
+            max_iters (int): PGD steps.
+            alpha (float): PGD step size.
+            harm_threshold (float): Minimum accuracy drop to consider harmful.
+            retry_limit (int): Max attempts if initial PGD fails to degrade accuracy.
+
+        Returns:
+            torch.Tensor: Final malicious update.
+        """
+        best_delta = None
+        best_loss_increase = -float("inf")
+
+        original_model = deepcopy(model)
+        original_acc = self.validate(original_model, self.pooled_balanced_loader)
+
+        for retry in range(retry_limit):
+            # === Step 1: Initialize delta ===
+            delta = target_direction.clone().detach().requires_grad_(True)
+            optimizer = torch.optim.SGD([delta], lr=alpha)
+
+            for step in range(max_iters):
+                optimizer.zero_grad()
+
+                # Apply update
+                attacked_model = self.apply_update_to_model(model, delta)
+
+                # Compute negative loss (maximize loss)
+                loss = -self.compute_loss(attacked_model, self.pooled_balanced_loader)
+                loss.backward()
+                optimizer.step()
+
+                with torch.no_grad():
+                    # === Cosine projection ===
+                    cos_sim = torch.cosine_similarity(delta, base_update, dim=0)
+                    if cos_sim < scaling_cos:
+                        delta.copy_(self.project_to_cosine(delta, base_update, scaling_cos))
+
+                    # === L2 projection ===
+                    if delta.norm() > epsilon:
+                        delta.copy_(delta / delta.norm() * epsilon)
+
+            # === Step 2: Evaluate new model ===
+            attacked_model = self.apply_update_to_model(model, delta)
+            new_acc = self.validate(attacked_model, self.pooled_balanced_loader)
+            acc_drop = original_acc - new_acc
+
+            self.logger.info(f"[FedOda][PGD] Retry {retry+1}: ΔAcc = {acc_drop:.4f}, Cos = {cos_sim:.4f}, ||Δ|| = {delta.norm():.4f}")
+
+            if acc_drop >= harm_threshold:
+                # Harmful and valid update found
+                return delta.detach()
+
+            # Track best attempt in case all retries fail
+            if acc_drop > best_loss_increase:
+                best_loss_increase = acc_drop
+                best_delta = delta.detach()
+
+            # Optional: slightly reduce cosine constraint to allow more flexibility
+            scaling_cos *= 0.95  # loosen constraint slightly for next retry
+
+        self.logger.warning("[FedOda][PGD] Could not generate a harmful update after retries. Returning best effort.")
+        return best_delta
+
+
 
     def get_cos_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
         # Calculate cosine distances
@@ -1109,6 +1278,21 @@ class FedOda:
                 mali_direction, benign_update, avg_cos_distance
             )
             malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
+        
+        elif self.attack_mode == "PPO":
+            round_number = len(self.val_acc_history)
+            prev_acc = self.val_acc_history[-1] if self.val_acc_history else 1.0
+
+            malicious_update_dict, malicious_update, reward = self._ppo_attack(
+                round_number=round_number,
+                prev_acc=prev_acc,
+                avg_cos_distance=avg_cos_distance,
+                avg_l2_distance=avg_l2_distance,
+                avg_update_norm=avg_update_norm,
+                avg_full_model_cos=avg_full_model_cos,
+                mali_direction=mali_direction,
+                benign_update=benign_update
+            )
 
         val_accuracy = self._evaluate_malicious_update(malicious_update)
         self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.4f}")
