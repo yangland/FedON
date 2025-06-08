@@ -45,15 +45,17 @@ class FedOda:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.attack_mode = "BO" # 'BO', "BI"
+        self.prev_bo_x = None
         
         # Create the Bayesian Optimizer
         if self.attack_mode == "BO":
             l2_bound = (0.0, 1.0)
             cos_bound = (0.0, 1.0)
             self.bayes_optimizer = BayesOptimizer(
-                bounds=[l2_bound, cos_bound],
+                bounds=[l2_bound], # bounds=[l2_bound, cos_bound],
                 base_estimator="GP",
-                acq_func="EI",
+                acq_func="LCB",
+                acq_func_kwargs={"kappa": 1.0},
                 random_state=42
             )
             
@@ -1061,13 +1063,16 @@ class FedOda:
 
             # 2. Get normalized suggestions in [0, 1]
             x_next = self.bayes_optimizer.suggest_next_point()
-            norm_scaling_l2, norm_scaling_cos = x_next[0], x_next[1]
+            # norm_scaling_l2, norm_scaling_cos = x_next[0], x_next[1]
+            norm_scaling_l2 = x_next[0]
 
             # 3. Map normalized values to actual bounds (LOG-scaled)
-            self.scaling_l2 = log2_map(norm_scaling_l2, 0.5, 10.0)
-            cos_dist_low_bound = avg_cos_distance*0.9
+            self.scaling_l2 = log2_map(norm_scaling_l2, 0.001, 20.0)
+            cos_dist_low_bound = avg_cos_distance
             self.logger.info(f"[FedOda][BO] Mapped cos domain: [{cos_dist_low_bound:.4f}, {cos_dist_dirs:.4f}]")
-            self.scaling_cos = log2_map(norm_scaling_cos, cos_dist_low_bound, cos_dist_dirs)
+            # self.scaling_cos = linear_map(norm_scaling_cos, cos_dist_low_bound, cos_dist_dirs)
+            self.scaling_cos = 0
+            norm_scaling_cos = 0
 
             # 4. Assign and apply
             self.epsilon = self.scaling_l2 * avg_l2_norm
@@ -1080,29 +1085,39 @@ class FedOda:
             )
 
             # 5. Use scaled cosine budget safely
-            malicious_update = self.craft_malicious_update_cos_budget(
-                mali_direction, benign_update, self.scaling_cos
-            )
+            # malicious_update = self.craft_malicious_update_cos_budget(
+            #     mali_direction, benign_update, self.scaling_cos
+            # )
+            malicious_update = mali_direction
             malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
             
             if not hasattr(self, "val_acc_history"):
                 self.val_acc_history = []
             self.val_acc_history.append(val_accuracy)
 
+            # Step 1: Compute reward for the action taken in the *previous* round
             reward = calculate_bo_reward(
                 acc_history=self.val_acc_history,
-                current_round=len(self.val_acc_history)-1,
+                current_round=len(self.val_acc_history) - 1,
                 gamma=0.98,
-                warmup_rounds=3,
+                warmup_rounds=0,
                 logger=self.logger
             )
-            
-            if reward is not None:
-                self.bayes_optimizer.observe(x_next, reward)
-                self.logger.info(f"[FedOda][BO] Observed reward: {reward:.4f} for x={x_next}")
+
+            # Step 2: If reward exists and we had a previous x, observe the reward
+            if reward is not None and self.prev_bo_x is not None:
+                self.bayes_optimizer.observe(self.prev_bo_x, reward)
+                self.logger.info(f"[FedOda][BO] Observed reward: {reward:.4f} for x={self.prev_bo_x}")
             else:
-                self.logger.info(f"[FedOda][BO] Warmup round — skipping reward observation for x={x_next}")
-        
+                self.logger.info(f"[FedOda][BO] Warmup round or no previous x — skipping reward observation")
+            self.logger.info(f"[FedOda][BO] Suggested next point: {x_next}")
+            # Step 3: Now suggest the next point for the current round
+            x_next = self.bayes_optimizer.suggest_next_point()
+            # norm_scaling_l2, norm_scaling_cos = x_next[0], x_next[1]
+
+            # Save this point for next round's reward
+            self.prev_bo_x = x_next
+
         elif self.attack_mode == "BI":  # Default BI mode
             self.epsilon = self.scaling_factor * avg_l2_norm
             malicious_update = self.craft_malicious_update_cos_budget(
@@ -1148,197 +1163,197 @@ class FedOda:
     
 
 
-    def _regular_attack_old(self, sample_num, batch_size, mco_dict, c_epochs, target_layers="none"):
-        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
-        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+    # def _regular_attack_old(self, sample_num, batch_size, mco_dict, c_epochs, target_layers="none"):
+    #     self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
+    #     g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
 
-        self.logger.info("[FedOda] Step 2: Predicting benign update")
-        benign_dir, simulated_norm = self.simulate_benign_direction(
-            loader=self.pooled_loader,
-            data_size=self.client_data_size,
-            batch_size=self.client_batch_size
-        )
+    #     self.logger.info("[FedOda] Step 2: Predicting benign update")
+    #     benign_dir, simulated_norm = self.simulate_benign_direction(
+    #         loader=self.pooled_loader,
+    #         data_size=self.client_data_size,
+    #         batch_size=self.client_batch_size
+    #     )
         
-        avg_l2_distance, avg_cos_distance, avg_update_norm, avg_full_model_cos = \
-            self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
-        benign_update = avg_update_norm * benign_dir
+    #     avg_l2_distance, avg_cos_distance, avg_update_norm, avg_full_model_cos = \
+    #         self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
+    #     benign_update = avg_update_norm * benign_dir
 
-        # For both BI and BO: use avg_l2_norm from above
-        avg_l2_norm = avg_update_norm       
+    #     # For both BI and BO: use avg_l2_norm from above
+    #     avg_l2_norm = avg_update_norm       
 
-        s_b, s_hat, s_m, alpha = self.estimate_client_distribution()
+    #     s_b, s_hat, s_m, alpha = self.estimate_client_distribution()
         
-        # Step 5: Compute ε = scaling_factor * benign_norm
-        self.epsilon = self.scaling_factor * avg_l2_norm
-        mali_direction = g_m_vec
+    #     # Step 5: Compute ε = scaling_factor * benign_norm
+    #     self.epsilon = self.scaling_factor * avg_l2_norm
+    #     mali_direction = g_m_vec
 
-        # Clip the malicious update to ensure it stays within the cosine budget
-        malicious_update = self.craft_malicious_update_cos_budget(mali_direction, benign_update, avg_cos_distance)
-        self.logger.info(f"[FedOda] Crafted malicious update with cosine budget: {avg_cos_distance:.4f}")
-        malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
+    #     # Clip the malicious update to ensure it stays within the cosine budget
+    #     malicious_update = self.craft_malicious_update_cos_budget(mali_direction, benign_update, avg_cos_distance)
+    #     self.logger.info(f"[FedOda] Crafted malicious update with cosine budget: {avg_cos_distance:.4f}")
+    #     malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
 
-        # Evaluate the malicious update
-        val_accuracy = self._evaluate_malicious_update(malicious_update)
-        self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.2f}%")
-        self.logger.info(f"[FedOda] benign_norm = {simulated_norm:.4f}, scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
+    #     # Evaluate the malicious update
+    #     val_accuracy = self._evaluate_malicious_update(malicious_update)
+    #     self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.2f}%")
+    #     self.logger.info(f"[FedOda] benign_norm = {simulated_norm:.4f}, scaling_factor = {self.scaling_factor:.4f}, ε = {self.epsilon:.4f}")
 
-        # Step 7: If selected last round, update history and perform inference
-        if self.prev_s_m is not None and self.prev_s_m > 0:
-            self.logger.info("[FedOda] Step 7: Observing actual server update from previous round")
-            delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
-            delta_s_pred = self.estimate_server_update(s_b, s_m, benign_update, malicious_update)
+    #     # Step 7: If selected last round, update history and perform inference
+    #     if self.prev_s_m is not None and self.prev_s_m > 0:
+    #         self.logger.info("[FedOda] Step 7: Observing actual server update from previous round")
+    #         delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.previous_server_model.state_dict())
+    #         delta_s_pred = self.estimate_server_update(s_b, s_m, benign_update, malicious_update)
 
-            self.logger.info("[FedOda] Step 8: Updating history")
-            self.update_history(delta_s, benign_update, delta_s_pred, s_m, malicious_update)
+    #         self.logger.info("[FedOda] Step 8: Updating history")
+    #         self.update_history(delta_s, benign_update, delta_s_pred, s_m, malicious_update)
 
-            cos_d1, cos_d2, cos_d3, cos_d4 = self.get_cos_dist(delta_s,
-                                                            benign_update,
-                                                            delta_s_pred,
-                                                            malicious_update)
+    #         cos_d1, cos_d2, cos_d3, cos_d4 = self.get_cos_dist(delta_s,
+    #                                                         benign_update,
+    #                                                         delta_s_pred,
+    #                                                         malicious_update)
 
-            l2_d1, l2_d2, l2_d3, l2_d4 = self.get_l2_dist(delta_s,
-                                                        benign_update,
-                                                        delta_s_pred,
-                                                        malicious_update)
+    #         l2_d1, l2_d2, l2_d3, l2_d4 = self.get_l2_dist(delta_s,
+    #                                                     benign_update,
+    #                                                     delta_s_pred,
+    #                                                     malicious_update)
 
-            self.logger.info(
-                f"[FedOda] cos_d(Δs, Δb')={cos_d1:.4f}, "
-                f"cos_d(Δs, Δs')={cos_d2:.4f}, "
-                f"cos_d(Δs, Δm)={cos_d3:.4f}, "
-                f"cos_d(Δb', Δm)={cos_d4:.4f}"
-            )
+    #         self.logger.info(
+    #             f"[FedOda] cos_d(Δs, Δb')={cos_d1:.4f}, "
+    #             f"cos_d(Δs, Δs')={cos_d2:.4f}, "
+    #             f"cos_d(Δs, Δm)={cos_d3:.4f}, "
+    #             f"cos_d(Δb', Δm)={cos_d4:.4f}"
+    #         )
 
-            self.logger.info(
-                f"[FedOda] L2²(Δs, Δb')={l2_d1:.4f}, "
-                f"L2²(Δs, Δs')={l2_d2:.4f}, "
-                f"L2²(Δs, Δm)={l2_d3:.4f}, "
-                f"L2²(Δb', Δm)={l2_d4:.4f}"
-            )
+    #         self.logger.info(
+    #             f"[FedOda] L2²(Δs, Δb')={l2_d1:.4f}, "
+    #             f"L2²(Δs, Δs')={l2_d2:.4f}, "
+    #             f"L2²(Δs, Δm)={l2_d3:.4f}, "
+    #             f"L2²(Δb', Δm)={l2_d4:.4f}"
+    #         )
 
-            self.logger.info("[FedOda] Step 9: Performing Bayesian inference")
-            if self.inference_mode == 'fixed':
-                posterior = None
-                self.logger.info("[FedOda] Fixed mode - maintaining constant scaling factor")
-            elif self.inference_mode == 'cos':
-                posterior, mean_log_likelihood = self.bayesian_inference_cosine()
-            elif self.inference_mode == 'l2':
-                posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update), use_average=False)
-            elif self.inference_mode == 'sign':
-                posterior = self.sign_based_bayesian_inference()
-            elif self.inference_mode == 'validation':
-                # Validate current server model on pooled data
-                current_val_acc = self.validate(self.server_model, self.pooled_loader)
-                self.pooled_val.append(current_val_acc)
-                posterior = 1
-                self.logger.info(f"[FedOda] Validation-based inference mode - current pooled val acc: {current_val_acc:.2f}%")
+    #         self.logger.info("[FedOda] Step 9: Performing Bayesian inference")
+    #         if self.inference_mode == 'fixed':
+    #             posterior = None
+    #             self.logger.info("[FedOda] Fixed mode - maintaining constant scaling factor")
+    #         elif self.inference_mode == 'cos':
+    #             posterior, mean_log_likelihood = self.bayesian_inference_cosine()
+    #         elif self.inference_mode == 'l2':
+    #             posterior, mean_log_likelihood = self.bayesian_inference_l2(d=len(malicious_update), use_average=False)
+    #         elif self.inference_mode == 'sign':
+    #             posterior = self.sign_based_bayesian_inference()
+    #         elif self.inference_mode == 'validation':
+    #             # Validate current server model on pooled data
+    #             current_val_acc = self.validate(self.server_model, self.pooled_loader)
+    #             self.pooled_val.append(current_val_acc)
+    #             posterior = 1
+    #             self.logger.info(f"[FedOda] Validation-based inference mode - current pooled val acc: {current_val_acc:.2f}%")
 
-                if len(self.pooled_val) >= 2:
-                    prev_acc = self.pooled_val[-2]
-                    delta_acc = current_val_acc - prev_acc
+    #             if len(self.pooled_val) >= 2:
+    #                 prev_acc = self.pooled_val[-2]
+    #                 delta_acc = current_val_acc - prev_acc
 
-                    self.logger.info(f"[FedOda] Previous Val Acc: {prev_acc:.2f}%, Delta: {delta_acc:.2f}%")
+    #                 self.logger.info(f"[FedOda] Previous Val Acc: {prev_acc:.2f}%, Delta: {delta_acc:.2f}%")
 
-                    if current_val_acc <= 10.0:
-                        self.logger.info("[FedOda] Accuracy very low, attack already effective. Keeping scaling factor unchanged.")
-                        posterior = 1
-                    elif delta_acc < 0:
-                        self.logger.info("[FedOda] Accuracy dropped - attack effective. Slight adjustment to scaling factor.")
-                        # self.scaling_factor *= 1.1  # Keep or slightly fine-tune (e.g., *= 0.99 if needed)
-                        posterior = 1
-                    else:
-                        self.logger.info("[FedOda] Accuracy did not drop - attack ineffective. Increasing scaling factor.")
-                        # self.scaling_factor *= 0.8  # Increase scaling to make future attack stronger
-                        posterior = 0
-                else:
-                    self.logger.info("[FedOda] Not enough validation history - skipping scaling factor adjustment.")
-            else:
-                raise ValueError(f"Unknown inference mode: {self.inference_mode}")
+    #                 if current_val_acc <= 10.0:
+    #                     self.logger.info("[FedOda] Accuracy very low, attack already effective. Keeping scaling factor unchanged.")
+    #                     posterior = 1
+    #                 elif delta_acc < 0:
+    #                     self.logger.info("[FedOda] Accuracy dropped - attack effective. Slight adjustment to scaling factor.")
+    #                     # self.scaling_factor *= 1.1  # Keep or slightly fine-tune (e.g., *= 0.99 if needed)
+    #                     posterior = 1
+    #                 else:
+    #                     self.logger.info("[FedOda] Accuracy did not drop - attack ineffective. Increasing scaling factor.")
+    #                     # self.scaling_factor *= 0.8  # Increase scaling to make future attack stronger
+    #                     posterior = 0
+    #             else:
+    #                 self.logger.info("[FedOda] Not enough validation history - skipping scaling factor adjustment.")
+    #         else:
+    #             raise ValueError(f"Unknown inference mode: {self.inference_mode}")
 
-            # Store posterior in history
-            if not hasattr(self, "posterior_history"):
-                self.posterior_history = []
-            self.posterior_history.append(posterior)
-            if len(self.posterior_history) > self.E:
-                self.posterior_history.pop(0)
+    #         # Store posterior in history
+    #         if not hasattr(self, "posterior_history"):
+    #             self.posterior_history = []
+    #         self.posterior_history.append(posterior)
+    #         if len(self.posterior_history) > self.E:
+    #             self.posterior_history.pop(0)
 
 
 
-            if self.inference_mode in ['l2', 'cos', 'sign', 'validation']:
-                valid_posteriors = [p for p in self.posterior_history if p is not None]
-                if valid_posteriors:
-                    prev_factor = self.scaling_factor
-                    self.scaling_factor = self.adjust_scaling_factor(prev_factor,
-                                                                     exploration_prob=0.1,
-                                                                     exploration_scale=1.5)
-                    self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
-                else:
-                    self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")
-            elif self.inference_mode == 'fixed':
-                self.logger.info(f"[FedOda] Fixed mode - scaling factor remains at {self.scaling_factor:.4f}")
-        else:
-            self.logger.info("[FedOda] Malicious clients were not selected last round. Skipping inference.")
-            posterior = None
-            if not hasattr(self, "posterior_history"):
-                self.posterior_history = []
-            self.posterior_history.append(None)
-            if len(self.posterior_history) > self.E * 2:
-                self.posterior_history.pop(0)
+    #         if self.inference_mode in ['l2', 'cos', 'sign', 'validation']:
+    #             valid_posteriors = [p for p in self.posterior_history if p is not None]
+    #             if valid_posteriors:
+    #                 prev_factor = self.scaling_factor
+    #                 self.scaling_factor = self.adjust_scaling_factor(prev_factor,
+    #                                                                  exploration_prob=0.1,
+    #                                                                  exploration_scale=1.5)
+    #                 self.logger.info(f"[FedOda] Scaling factor adjusted: {prev_factor:.4f} -> {self.scaling_factor:.4f}")
+    #             else:
+    #                 self.logger.info("[FedOda] No valid posteriors available — skipping scaling factor adjustment.")
+    #         elif self.inference_mode == 'fixed':
+    #             self.logger.info(f"[FedOda] Fixed mode - scaling factor remains at {self.scaling_factor:.4f}")
+    #     else:
+    #         self.logger.info("[FedOda] Malicious clients were not selected last round. Skipping inference.")
+    #         posterior = None
+    #         if not hasattr(self, "posterior_history"):
+    #             self.posterior_history = []
+    #         self.posterior_history.append(None)
+    #         if len(self.posterior_history) > self.E * 2:
+    #             self.posterior_history.pop(0)
 
-        # Step 10: Return malicious update
-        self.logger.info("[FedOda] Step 10: Creating malicious update dict")
-        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+    #     # Step 10: Return malicious update
+    #     self.logger.info("[FedOda] Step 10: Creating malicious update dict")
+    #     malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
         
-        if target_layers != None:
-            # Convert benign update to dict
-            benign_update_dict = vector_to_state_dict(benign_update, self.server_model)
+    #     if target_layers != None:
+    #         # Convert benign update to dict
+    #         benign_update_dict = vector_to_state_dict(benign_update, self.server_model)
 
-            for k in malicious_update_dict:
-                if k not in target_layers:
-                    # self.logger.info(f"[FedOda] Layer {k} not in target layers, skipping.")
-                    malicious_update_dict[k] = benign_update_dict[k]  # Use benign layer instead
-                else:
-                    self.logger.info(f"[FedOda] Layer {k} in target layers, keeping malicious update.")
+    #         for k in malicious_update_dict:
+    #             if k not in target_layers:
+    #                 # self.logger.info(f"[FedOda] Layer {k} not in target layers, skipping.")
+    #                 malicious_update_dict[k] = benign_update_dict[k]  # Use benign layer instead
+    #             else:
+    #                 self.logger.info(f"[FedOda] Layer {k} in target layers, keeping malicious update.")
             
-            # Reflatten the updated malicious dict
-            malicious_update = flatten_model(malicious_update_dict)
+    #         # Reflatten the updated malicious dict
+    #         malicious_update = flatten_model(malicious_update_dict)
         
 
-        # 1. Norms
-        mali_norm = torch.norm(malicious_update).item()
-        benign_norm = torch.norm(benign_update).item()
+    #     # 1. Norms
+    #     mali_norm = torch.norm(malicious_update).item()
+    #     benign_norm = torch.norm(benign_update).item()
 
-        # 2. L2 distance
-        l2_dist = torch.norm(malicious_update - benign_update).item()
+    #     # 2. L2 distance
+    #     l2_dist = torch.norm(malicious_update - benign_update).item()
 
-        # 3. Cosine distance between updates
-        cos_dist = 1 - torch.nn.functional.cosine_similarity(malicious_update.unsqueeze(0), benign_update.unsqueeze(0)).item()
+    #     # 3. Cosine distance between updates
+    #     cos_dist = 1 - torch.nn.functional.cosine_similarity(malicious_update.unsqueeze(0), benign_update.unsqueeze(0)).item()
 
-        # 4. Cosine distance between (update + model)
-        server_weights = flatten_model(self.server_model.state_dict())
-        mali_model_vec = server_weights + malicious_update
-        benign_model_vec = server_weights + benign_update
+    #     # 4. Cosine distance between (update + model)
+    #     server_weights = flatten_model(self.server_model.state_dict())
+    #     mali_model_vec = server_weights + malicious_update
+    #     benign_model_vec = server_weights + benign_update
 
-        cos_model_dist = 1 - torch.nn.functional.cosine_similarity(mali_model_vec.unsqueeze(0), benign_model_vec.unsqueeze(0)).item()
+    #     cos_model_dist = 1 - torch.nn.functional.cosine_similarity(mali_model_vec.unsqueeze(0), benign_model_vec.unsqueeze(0)).item()
         
-        self.logger.info(
-            f"[FedOda] Norms     | norm(Δ_b): {benign_norm:.4f} | norm(Δ_m): {mali_norm:.4f} "
-        )
-        self.logger.info(
-            f"[FedOda] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_norm:.4f}"
-        )
-        self.logger.info(
-            f"[FedOda] Cos Dist Δ| Δb~Δb: {avg_cos_distance:.4f} | Δ_m~Δ_b: {cos_dist:.4f} "
-        )
-        self.logger.info(
-            f"[FedOda] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
-        )
+    #     self.logger.info(
+    #         f"[FedOda] Norms     | norm(Δ_b): {benign_norm:.4f} | norm(Δ_m): {mali_norm:.4f} "
+    #     )
+    #     self.logger.info(
+    #         f"[FedOda] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_norm:.4f}"
+    #     )
+    #     self.logger.info(
+    #         f"[FedOda] Cos Dist Δ| Δb~Δb: {avg_cos_distance:.4f} | Δ_m~Δ_b: {cos_dist:.4f} "
+    #     )
+    #     self.logger.info(
+    #         f"[FedOda] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
+    #     )
 
-        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * avg_l2_norm:.4f}")
-        self.logger.info("[FedOda] Attack completed, returning malicious update.")
+    #     self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior}, new scaling_factor = {self.scaling_factor:.4f}, ε recomputed = {self.scaling_factor * avg_l2_norm:.4f}")
+    #     self.logger.info("[FedOda] Attack completed, returning malicious update.")
 
-        self.prev_s_m = self.current_s_m
+    #     self.prev_s_m = self.current_s_m
 
-        return malicious_update_dict, malicious_update, posterior
+    #     return malicious_update_dict, malicious_update, posterior
 
 
     def log_to_full_history(self, *, s_b=None, s_hat=None,
@@ -1466,32 +1481,39 @@ def calculate_bo_reward(
 
 
 class BayesOptimizer:
-    def __init__(self, bounds, base_estimator="GP", acq_func="EI", random_state=None):
+    def __init__(self, bounds, base_estimator="GP", acq_func="EI", acq_func_kwargs=None, random_state=None):
         self.optimizer = Optimizer(
             dimensions=bounds,
             base_estimator=base_estimator,
             acq_func=acq_func,
-            random_state=random_state
+            random_state=random_state,
+            acq_func_kwargs=acq_func_kwargs
         )
         self.xs = []
         self.ys = []
 
+        # Initialize best reward tracking
+        self.best_x = None
+        self.best_reward = float('-inf')  # or use None and check with `is not None`
+
     def suggest_next_point(self):
+        # 20% of the time, exploit the best known point (if available)
+        if self.best_x is not None and len(self.ys) > 10 and random.random() < 0.2:
+            return self.best_x
+
         x_next = self.optimizer.ask()
         self.xs.append(x_next)
         return x_next
 
     def observe(self, x, reward):
-        # Optional: overwrite the last point if it was just suggested
-        if len(self.xs) > 0 and self.xs[-1] == x:
-            self.ys.append(reward)
-            self.optimizer.tell(x, reward)
-        else:
-            # for consistency in external use
-            self.xs.append(x)
-            self.ys.append(reward)
-            self.optimizer.tell(x, reward)
+        # Update best reward if improved
+        if reward > self.best_reward:
+            self.best_reward = reward
+            self.best_x = x
 
+        self.xs.append(x)
+        self.ys.append(reward)
+        self.optimizer.tell(x, reward)
 
 def log2_map(norm_value: float, min_val: float, max_val: float) -> float:
     """
@@ -1513,3 +1535,22 @@ def log2_map(norm_value: float, min_val: float, max_val: float) -> float:
     log_max = math.log2(max_val)
     log_val = log_min + norm_value * (log_max - log_min)
     return 2 ** log_val
+
+def linear_map(norm_value: float, min_val: float, max_val: float) -> float:
+    """
+    Linearly maps a normalized value [0, 1] to a target range [min_val, max_val].
+    
+    Args:
+        norm_value (float): Input value in [0, 1]
+        min_val (float): Minimum of the target range
+        max_val (float): Maximum of the target range
+    
+    Returns:
+        float: Mapped value in [min_val, max_val]
+    
+    Example:
+        >>> linear_map(0.5, 10, 20)
+        15.0  # Midway between 10 and 20
+    """
+    assert 0.0 <= norm_value <= 1.0, "norm_value must be in [0, 1]"
+    return min_val + norm_value * (max_val - min_val)
