@@ -49,10 +49,11 @@ class FedOda:
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
         self.attack_mode = "PPO" # 'BO', "BI", "PPO"
-        self.ppo_mode = "MO"  # Options: "MO" for Multi-Objective, "scalar" for regular PPO
-        self.ppo_agent = PPOAgent(state_dim=4, action_dim=2)  # 4 state features, 2 action dims
+        self.ppo_agent = PPOAgent(state_dim=4, action_dim=2, device=device, mo_weights=[0.1, 0.6, 0.3])  # 4 state features, 2 action dims
         self.ppo_episode_memory = []
-
+        self.prev_server_model = None
+        self.prev_global_update = None
+        self.prev_malicious_update = None
         
         # Create the Bayesian Optimizer
         if self.attack_mode == "BO":
@@ -422,9 +423,9 @@ class FedOda:
 
     def compute_attack_influence_r3(self):
         """
-        Compute r3 = cos(Δb', Δs) / cos(Δm, Δs)
+        Compute r3 = cos_b_dist / (cos_b_dist + cos_m_dist)
         Measures influence of attack vs. benign update.
-        Requires previous server model and previous updates.
+        Normalized to [0, 1] for stability.
         """
         if (self.prev_server_model is None or
             self.prev_benign_update is None or
@@ -436,178 +437,89 @@ class FedOda:
         delta_b = self.prev_benign_update
         delta_m = self.prev_malicious_update
 
-        cos_b_s = F.cosine_similarity(delta_b.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
-        cos_m_s = F.cosine_similarity(delta_m.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
+        cos_b = F.cosine_similarity(delta_b.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
+        cos_m = F.cosine_similarity(delta_m.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
 
-        r3 = cos_b_s / (cos_m_s + 1e-8)
-        self.logger.info(f"[FedOda] r3 attack influence: cos_b_s = {cos_b_s:.4f}, cos_m_s = {cos_m_s:.4f}, r3 = {r3:.4f}")
+        # Convert similarity to distance in [0, 2]
+        cos_b_dist = 1 - cos_b
+        cos_m_dist = 1 - cos_m
+
+        # Compute normalized r3 ∈ [0, 1]
+        r3 = cos_b_dist / (cos_b_dist + cos_m_dist + 1e-8)
+
+        self.logger.info(f"[FedOda] r3 attack influence: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, r3 = {r3:.4f}")
         return r3
 
 
-    def _ppo_attack(self, round_number, prev_acc, avg_cos_distance, avg_l2_distance,
-                    avg_update_norm, avg_full_model_cos, mali_direction, benign_update):
+    def mali_update_craft_l2_cos(self, model, benign_update, target_direction, scaling_cos_dist,
+                                 epsilon, harm_threshold=0.01, retry_limit=5):
+                                
         """
-        PPO-guided malicious update generation (supports scalar and multi-objective PPO).
+        Craft a malicious update Δₘ such that:
+            - Lies in the plane of `target_direction` and `benign_update`
+            - L2 norm == epsilon
+            - Cosine distance(Δₘ, target_direction) == scaling_cos_dist
+            - Reduces validation accuracy
 
         Args:
-            round_number (int): Current FL round index.
-            prev_acc (float): Previous malicious validation accuracy.
-            avg_cos_distance (float): Average cosine distance from benign updates.
-            avg_l2_distance (float): Average L2 distance from benign updates.
-            avg_update_norm (float): Norm of average benign update.
-            avg_full_model_cos (float): Cosine similarity of malicious direction w.r.t full model update.
-            mali_direction (torch.Tensor): Direction of the malicious update.
-            benign_update (torch.Tensor): Aggregated benign update vector.
-
-        Returns:
-            malicious_update_dict (dict): Malicious model update in state_dict format.
-            malicious_update (torch.Tensor): Malicious update vector.
-            reward (float or torch.Tensor): Scalar or vector reward depending on PPO mode.
-        """
-
-        self.logger.info(f"[FedOda][PPO] Starting PPO attack — Mode: {self.ppo_mode}")
-
-        # === Step 1: Construct PPO State Vector ===
-        t = round_number + 1  # for reward shaping
-        state = torch.tensor([
-            prev_acc,
-            avg_cos_distance,
-            avg_l2_distance,
-            round_number / 100.0  # normalized round
-        ], dtype=torch.float32)
-
-        # === Step 2: Select Action from PPO Agent ===
-        with torch.no_grad():
-            action = self.ppo_agent.select_action(state)  # expects 2D continuous action: [l2_scale, cos_scale]
-
-        norm_scaling_l2 = action[0].item()
-        norm_scaling_cos = action[1].item()
-
-        # === Step 3: Map Actions to Real Scaling Factors ===
-        self.scaling_l2 = log2_map_from_tanh(norm_scaling_l2, 0.5, 20.0)
-        cos_dist_low_bound = avg_cos_distance * 0.9  # to prevent too small values
-        self.scaling_cos = log2_map_from_tanh(norm_scaling_cos, cos_dist_low_bound, avg_cos_distance)
-
-        self.epsilon = self.scaling_l2 * avg_update_norm
-
-        # === Step 4: Craft Malicious Update via PGD ===
-        malicious_update = self.mali_update_craft_l2_cos(
-            model=self.server_model,
-            base_update=benign_update,
-            target_direction=mali_direction,
-            scaling_cos=self.scaling_cos,
-            epsilon=self.epsilon,
-            max_iters=10,
-            alpha=1e-2
-        )
-
-        malicious_update = malicious_update / (malicious_update.norm() + 1e-10) * self.epsilon
-
-        # === Step 5: Evaluate Malicious Update ===
-        attacked_model = self.apply_update_to_model(self.server_model, malicious_update)
-        val_accuracy = self.validate(attacked_model, self.pooled_balanced_loader)
-        self.val_acc_pooled_history.append(val_accuracy)
-
-        # === Step 6: Compute Reward Components ===
-        beta = 0.05
-        r1 = (1 - val_accuracy) * (1 - np.exp(-beta * t))      # long-term degradation
-        r2 = prev_acc - val_accuracy                        # immediate damage
-        r3 = self.compute_attack_influence_r3() # influence on aggregation
-
-        # === Step 7: Reward Based on PPO Mode ===
-        if self.ppo_mode == "MO":
-            # Multi-objective PPO: reward is a vector
-            reward = torch.tensor([r1, r2, r3], dtype=torch.float32)
-            self.logger.info(f"[FedOda][PPO][MO] r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f}")
-        elif self.ppo_mode == "scalar":
-            # Scalar PPO: weighted sum of objectives
-            reward = 0.6 * r1 + 0.3 * r2 + 0.1 * r3
-            self.logger.info(f"[FedOda][PPO][Scalar] Reward={reward:.4f} (r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f})")
-        else:
-            return -1
-        
-        # === Step 8: Store Experience to PPO Memory ===
-        self.ppo_episode_memory.append((state, action, reward))
-
-        # === Step 9: Convert Update to Server-Compatible Format ===
-        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
-
-        return malicious_update_dict, malicious_update, reward
-
-
-    def mali_update_craft_l2_cos(self, model, base_update, target_direction, 
-                                scaling_cos, epsilon, max_iters=10, alpha=1e-2,
-                                harm_threshold=0.01, retry_limit=3):
-        """
-        PGD-based malicious update crafting within L2 + cosine constraints,
-        ensuring the final update degrades model accuracy (harmful).
-
-        Args:
-            model (nn.Module): The server model to attack.
-            base_update (torch.Tensor): The benign average update vector.
-            target_direction (torch.Tensor): Malicious direction to optimize.
-            scaling_cos (float): Cosine similarity threshold.
+            model (nn.Module): Server model to attack.
+            benign_update (torch.Tensor): Benign model update.
+            target_direction (torch.Tensor): Malicious direction (unit vector).
+            scaling_cos_dist (float): Desired cosine distance from target_direction.
             epsilon (float): L2-norm constraint.
-            max_iters (int): PGD steps.
-            alpha (float): PGD step size.
             harm_threshold (float): Minimum accuracy drop to consider harmful.
-            retry_limit (int): Max attempts if initial PGD fails to degrade accuracy.
+            retry_limit (int): Max attempts if update is not harmful enough.
 
         Returns:
-            torch.Tensor: Final malicious update.
+            torch.Tensor: Crafted malicious update Δₘ.
         """
+        original_model_state = deepcopy(model.state_dict())
+        original_acc = self.validate(model, self.pooled_balanced_loader)
         best_delta = None
-        best_loss_increase = -float("inf")
+        best_acc_drop = -float("inf")
 
-        original_model = deepcopy(model)
-        original_acc = self.validate(original_model, self.pooled_balanced_loader)
+        for attempt in range(retry_limit):
+            # Step 1: Generate a vector with desired cosine distance
+            crafted_direction = self.project_to_cosine(
+                v=benign_update,  # benign direction
+                ref=target_direction,  # target malicious direction
+                desired_cos_dist=scaling_cos_dist  # how much to deviate from malicious
+            )
 
-        for retry in range(retry_limit):
-            # === Step 1: Initialize delta ===
-            delta = target_direction.clone().detach().requires_grad_(True)
-            optimizer = torch.optim.SGD([delta], lr=alpha)
+            # Step 2: Scale to L2 norm = epsilon
+            delta = crafted_direction / crafted_direction.norm() * epsilon
+            # print("[DEBUG] delta type:", delta.dtype)
+            # print("[DEBUG] delta shape:", delta.shape)
 
-            for step in range(max_iters):
-                optimizer.zero_grad()
 
-                # Apply update
-                attacked_model = self.apply_update_to_model(model, delta)
-
-                # Compute negative loss (maximize loss)
-                loss = -self.compute_loss(attacked_model, self.pooled_balanced_loader, require_grad=True)
-                loss.backward()
-                optimizer.step()
-
-                with torch.no_grad():
-                    # === Cosine projection ===
-                    cos_sim = torch.cosine_similarity(delta, base_update, dim=0)
-                    if cos_sim < scaling_cos:
-                        delta.copy_(self.project_to_cosine(delta, base_update, scaling_cos))
-
-                    # === L2 projection ===
-                    if delta.norm() > epsilon:
-                        delta.copy_(delta / delta.norm() * epsilon)
-
-            # === Step 2: Evaluate new model ===
+            # Step 3: Apply to model and evaluate
             attacked_model = self.apply_update_to_model(model, delta)
             new_acc = self.validate(attacked_model, self.pooled_balanced_loader)
             acc_drop = original_acc - new_acc
 
-            self.logger.info(f"[FedOda][PGD] Retry {retry+1}: ΔAcc = {acc_drop:.4f}, Cos = {cos_sim:.4f}, ||Δ|| = {delta.norm():.4f}")
+            # Cosine distance logging
+            cos_dist = 1 - F.cosine_similarity(delta.unsqueeze(0), target_direction.unsqueeze(0), dim=1).item()
+            self.logger.info(
+                f"[FedOda][Craft] Attempt {attempt + 1}: ΔAcc = {acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+            )
 
+            # Success condition
             if acc_drop >= harm_threshold:
-                # Harmful and valid update found
+                model.load_state_dict(original_model_state)
                 return delta.detach()
 
-            # Track best attempt in case all retries fail
-            if acc_drop > best_loss_increase:
-                best_loss_increase = acc_drop
+            # Otherwise, keep best and relax constraint
+            if acc_drop > best_acc_drop:
+                best_acc_drop = acc_drop
                 best_delta = delta.detach()
 
-            # Optional: slightly reduce cosine constraint to allow more flexibility
-            scaling_cos *= 0.95  # loosen constraint slightly for next retry
+            scaling_cos_dist *= 1.10  # Relax constraint
+            model.load_state_dict(original_model_state)
 
-        self.logger.warning("[FedOda][PGD] Could not generate a harmful update after retries. Returning best effort.")
+        self.logger.warning("[FedOda][Craft] Could not generate a harmful update. Returning best effort.")
+        # restore original model state
+        model.load_state_dict(original_model_state)
+        
         return best_delta
 
 
@@ -1075,9 +987,11 @@ class FedOda:
         Returns:
             nn.Module: Updated model.
         """
+        
         new_model = deepcopy(model)
         update_dict = vector_to_state_dict(update_vector, new_model)
         for (name, param), (_, update) in zip(new_model.named_parameters(), update_dict.items()):
+            # print(f"[DEBUG] update.dtype = {update.dtype}, param dtype = {param.data.dtype}")
             param.data += update
         return new_model
 
@@ -1114,22 +1028,39 @@ class FedOda:
         return avg_loss
 
 
-    def project_to_cosine(self, v, ref, min_cos):
+    def project_to_cosine(self, v, ref, desired_cos_dist):
         """
-        Project vector `v` to satisfy cosine similarity >= min_cos w.r.t. `ref`.
+        Project vector `v` onto the 2D plane spanned by `v` and `ref`,
+        such that it has cosine distance = desired_cos_dist to `ref`.
 
         Args:
-            v (torch.Tensor): Vector to be projected.
-            ref (torch.Tensor): Reference vector.
-            min_cos (float): Cosine similarity threshold.
+            v (torch.Tensor): Vector to be projected (e.g., base_update).
+            ref (torch.Tensor): Reference direction (e.g., target_direction).
+            desired_cos_dist (float): Target cosine distance to `ref`.
 
         Returns:
             torch.Tensor: Projected vector.
         """
-        ref = ref / (ref.norm() + 1e-10)
-        v_proj = v - (v @ ref) * ref
-        v_parallel = min_cos * v.norm() * ref
-        return v_parallel + v_proj
+        desired_cos_sim = 1.0 - desired_cos_dist  # Convert distance to similarity
+
+        # ✅ Clamp to avoid numerical errors that result in complex numbers
+        desired_cos_sim = max(min(desired_cos_sim, 1.0), -1.0)
+
+        ref_unit = ref / (ref.norm() + 1e-10)
+        v_proj = v - (v @ ref_unit) * ref_unit
+        v_proj_norm = v_proj.norm() + 1e-10
+
+        a = desired_cos_sim
+        b_squared = 1.0 - desired_cos_sim ** 2
+
+        # ✅ Prevent negative sqrt due to floating point error
+        b = (b_squared if b_squared > 0 else 0.0) ** 0.5
+
+        v_proj_unit = v_proj / v_proj_norm
+        projected_direction = a * ref_unit + b * v_proj_unit
+        return projected_direction
+
+
 
 
     def _evaluate_model(self, model, loader):
@@ -1153,7 +1084,7 @@ class FedOda:
                 _, predicted = torch.max(output.data, 1)
                 total += target.size(0)
                 correct += (predicted == target).sum().item()
-        return 100 * correct / total
+        return correct / total
 
 
 
@@ -1306,13 +1237,13 @@ class FedOda:
         ).item()
 
         logger.info(
-            f"[FedOda] Norms     | norm(Δ_b): {benign_norm:.4f} | norm(Δ_m): {mali_norm:.4f} "
+            f"[FedOda] Norms     |  norm(Δ_m): {mali_norm:.4f} | norm(Δ_b): {benign_norm:.4f}"
         )
         logger.info(
             f"[FedOda] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_dist:.4f}"
         )
         logger.info(
-            f"[FedOda] Cos Dist Δ| Δb~Δb: {avg_cos_distance:.4f} | Δ_m~Δ_b: {cos_dist:.4f} "
+            f"[FedOda] Cos Dist Δ|  Δ_m~Δ_b: {cos_dist:.4f} | Δb~Δb: {avg_cos_distance:.4f}"
         )
         logger.info(
             f"[FedOda] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
@@ -1320,23 +1251,28 @@ class FedOda:
 
 
     def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs, target_layers="none"):
-        self.logger.info("[FedOda] Step 1: Computing attack direction (g_m)")
-        g_m_dict, g_m_vec = self.get_attack_direction(self.server_model, self.pooled_loader)
+        # Step1. perform analysis
+        self.logger.info("[FedOda] Step 1: Computing best attack direction (g_m)")
+        g_m_dict, g_m = self.get_attack_direction(self.server_model, self.pooled_loader)
 
-        self.logger.info("[FedOda] Step 2: Predicting benign update")
-        benign_dir, simulated_norm = self.simulate_benign_direction(
+        self.logger.info("[FedOda] Step 2: Predicting benign update direction with pooled data")
+        benign_direction, simulated_norm = self.simulate_benign_direction(
             loader=self.pooled_loader,
             data_size=self.client_data_size,
             batch_size=self.client_batch_size
         )
 
+        self.logger.info("[FedOda] Step 3: Simulating benign updates for sampled clients")
         avg_l2_distance, avg_cos_distance, avg_update_norm, avg_full_model_cos = \
             self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
-        benign_update = avg_update_norm * benign_dir
-        avg_l2_norm = avg_update_norm
-        mali_direction = g_m_vec
 
-        val_accuracy = self.validate(self.server_model, self.pooled_balanced_loader)
+        # Get the estimated benign model update(\Delta_b'), and the best attack direction (g_m)   
+        avg_l2_norm = avg_update_norm
+        benign_update = avg_update_norm * benign_direction
+        mali_direction = g_m
+        # Get the server model valid accuracy (Acc_m)
+        acc_m = self.validate(self.server_model, self.pooled_balanced_loader)
+        self.val_acc_pooled_history.append(acc_m)
 
         if self.attack_mode == "BO":
             malicious_update_dict, malicious_update = bo_attack(
@@ -1352,12 +1288,13 @@ class FedOda:
             )
         elif self.attack_mode == "PPO":
             round_number = len(self.val_acc_pooled_history)
-            prev_acc = self.val_acc_pooled_history[-1] if self.val_acc_pooled_history else 0.0
+            prev_acc = self.val_acc_pooled_history[-2] if len(self.val_acc_pooled_history) > 1 else 0.0
 
             malicious_update_dict, malicious_update, reward = ppo_attack(
                 fedoda = self,
                 round_number=round_number,
                 prev_acc=prev_acc,
+                curr_acc=acc_m,
                 avg_cos_distance=avg_cos_distance,
                 avg_l2_distance=avg_l2_distance,
                 avg_update_norm=avg_update_norm,
@@ -1366,8 +1303,8 @@ class FedOda:
                 benign_update=benign_update
             )
 
-        val_accuracy = self._evaluate_malicious_update(malicious_update)
-        self.logger.info(f"[FedOda] Malicious update validation accuracy: {val_accuracy:.4f}")
+        acc_vail = self._evaluate_malicious_update(malicious_update)
+        self.logger.info(f"[FedOda] Malicious update validation accuracy: {acc_vail:.4f}")
 
         # Assemble malicious update dict
         malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
