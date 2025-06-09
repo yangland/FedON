@@ -396,6 +396,26 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                                                             attack_method, 
                                                                             mali_labels,
                                                                             device=device)
+        
+        # >>> EARLY STOPPING CHECK FOR NaN/inf <<<
+        if not torch.isfinite(torch.tensor(test_loss)):
+            logger.error(f"[ABORT] NaN or Inf detected in validation loss at iteration {iter}.")
+            logger.info(f"[ABORT] Final iteration: {iter}. Stopping FL training early due to model divergence.")
+
+            # Save current model
+            torch.save(mco_dict[-1]["c_model"].state_dict(), os.path.join(exp_dir, f"server_model_final_iter_{iter}.pt"))
+
+            # Also save logs or metrics if needed
+            loss_acc_csv.append_save_csv([iter, test_loss, test_accuracy])
+            attack_success_rate_csv.append_save_csv([iter] + list(attack_success_rate.values()))
+            
+            # Optionally: Save a message to a text file
+            with open(os.path.join(exp_dir, "abort_reason.txt"), "w") as f:
+                f.write(f"Training aborted at iteration {iter} due to NaN/Inf loss.\n")
+                f.write(f"Loss: {test_loss}, Accuracy: {test_accuracy}\n")
+
+            break  # Stop the FL loop
+        
         loss_vail_hist.append(test_loss)
         acc_vail_hist.append(test_accuracy)
         per_class_acc_vail_hist.append(per_class_accuracy)
