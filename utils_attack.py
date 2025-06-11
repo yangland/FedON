@@ -37,6 +37,9 @@ def log2_map_from_tanh(norm_value, min_val, max_val):
     log_val = log_min + norm_01 * (log_max - log_min)
     return 2 ** log_val
 
+def linear_map_from_tanh(norm_value, min_val, max_val):
+    """Linearly map [-1, 1] to [min_val, max_val]."""
+    return min_val + (norm_value + 1.0) / 2.0 * (max_val - min_val)
 
 def calculate_bo_reward(
     acc_history: List[float],

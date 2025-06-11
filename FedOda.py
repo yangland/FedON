@@ -49,7 +49,7 @@ class FedOda:
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
         self.attack_mode = "PPO" # 'BO', "BI", "PPO"
-        self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.1, 0.6, 0.3])  # 5 state features, 2 action dims
+        self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
         self.ppo_episode_memory = []
         self.prev_server_model = None
         self.prev_global_update = None
@@ -441,15 +441,38 @@ class FedOda:
         return min(r1, 1.0)  # cap to 1.0
 
 
-    def compute_attack_influence_r3(self):
-        """
-        Compute r3 = (cos_b_dist - cos_m_dist) / (cos_b_dist + cos_m_dist)
-        This measures the relative influence of benign vs. malicious updates.
-        - r3 ∈ [-1, 1]
-        - Positive r3: malicious update had greater influence
-        - Negative r3: benign update had greater influence
-        """
+    def compute_attack_influence_r2(self, prev_acc, curr_acc, target_acc=0.1, tolerance=0.03,
+                                max_penalty=20.0, scale=50.0):
+        if prev_acc is None:
+            return 0.0
+            
+        delta = prev_acc - curr_acc
+        
+        # Case 1: Accuracy above target + tolerance → aggressive attack
+        if curr_acc > target_acc + tolerance:
+            return delta * scale  # Positive if accuracy dropped
+            
+        # Case 2: Within target range → maintenance
+        elif curr_acc >= target_acc - tolerance:
+            if delta > 0:  # Accuracy dropped
+                return delta * (scale * 0.5)  # Smaller reward for maintenance
+            else:  # Accuracy increased
+                return delta * max_penalty  # Penalize increases
+                
+        # Case 3: Below target → small positive reward
+        else:
+            return 0.1  # Small constant reward for staying below target
 
+
+    def compute_attack_influence_r3(self, scale=10.0, clip=True):
+        """
+        Compute r3 = (cos_b_dist - cos_m_dist) / (cos_b_dist + cos_m_dist), scaled to [-scale, scale].
+        Args:
+            scale: Reward scaling factor (default: 10.0).
+            clip: Whether to enforce hard bounds (recommended).
+        Returns:
+            r3: Scaled reward in [-scale, scale], or None if missing data.
+        """
         if (self.prev_server_model is None or
             self.prev_benign_update is None or
             self.prev_malicious_update is None):
@@ -463,29 +486,46 @@ class FedOda:
         cos_b = F.cosine_similarity(delta_b.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
         cos_m = F.cosine_similarity(delta_m.unsqueeze(0), delta_s.unsqueeze(0), dim=1).item()
 
-        # Convert similarity to distance in [0, 2]
-        cos_b_dist = 1 - cos_b
+        cos_b_dist = 1 - cos_b  # Convert similarity to distance [0, 2]
         cos_m_dist = 1 - cos_m
 
-        # Compute signed, bounded r3 ∈ [-1, 1]
         numerator = cos_b_dist - cos_m_dist
         denominator = cos_b_dist + cos_m_dist + 1e-8
-        r3 = numerator / denominator
+        r3 = numerator / denominator  # Original r3 ∈ [-1, 1]
 
-        self.logger.info(f"[FedOda] r3: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, r3 = {r3:.4f}")
-        return r3
+        # Scale and clip
+        scaled_r3 = r3 * scale
+        if clip:
+            scaled_r3 = np.clip(scaled_r3, -scale, scale)
+
+        self.logger.info(
+            f"[FedOda] r3: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, "
+            f"scaled_r3 = {scaled_r3:.4f}"
+        )
+        return float(scaled_r3)
 
 
 
-    def mali_update_craft_l2_cos(self, model, benign_update, target_direction, scaling_cos_dist,
-                                 epsilon, harm_threshold=0.01, retry_limit=5):
-                                
+    def mali_update_craft_l2_cos(
+        self,
+        model,
+        benign_update,
+        target_direction,
+        scaling_cos_dist,
+        epsilon,
+        harm_threshold=0.01,
+        retry_limit=5,
+        epsilon_growth=1.10,
+        cos_growth=1.10,
+    ):
         """
         Craft a malicious update Δₘ such that:
             - Lies in the plane of `target_direction` and `benign_update`
-            - L2 norm == epsilon
-            - Cosine distance(Δₘ, target_direction) == scaling_cos_dist
+            - L2 norm ≈ epsilon (relaxed over retries)
+            - Cosine distance(Δₘ, target_direction) ≈ scaling_cos_dist (relaxed over retries)
             - Reduces validation accuracy
+
+        If no such update is found, returns best effort or zero update if all increased accuracy.
 
         Args:
             model (nn.Module): Server model to attack.
@@ -495,57 +535,71 @@ class FedOda:
             epsilon (float): L2-norm constraint.
             harm_threshold (float): Minimum accuracy drop to consider harmful.
             retry_limit (int): Max attempts if update is not harmful enough.
+            epsilon_growth (float): Factor to increase epsilon each retry.
+            cos_growth (float): Factor to increase cosine distance each retry.
 
         Returns:
             torch.Tensor: Crafted malicious update Δₘ.
         """
         original_model_state = deepcopy(model.state_dict())
         original_acc = self.validate(model, self.pooled_balanced_loader)
+
         best_delta = None
         best_acc_drop = -float("inf")
+        all_acc_improving = True
 
         for attempt in range(retry_limit):
-            # Step 1: Generate a vector with desired cosine distance
+            # === Step 1: Create direction with desired cosine distance
             crafted_direction = self.project_to_cosine(
-                v=benign_update,  # benign direction
-                ref=target_direction,  # target malicious direction
-                desired_cos_dist=scaling_cos_dist  # how much to deviate from malicious
+                v=benign_update,
+                ref=target_direction,
+                desired_cos_dist=scaling_cos_dist
             )
 
-            # Step 2: Scale to L2 norm = epsilon
+            # === Step 2: Scale to L2 norm = epsilon
             delta = crafted_direction / crafted_direction.norm() * epsilon
-            # print("[DEBUG] delta type:", delta.dtype)
-            # print("[DEBUG] delta shape:", delta.shape)
 
-
-            # Step 3: Apply to model and evaluate
+            # === Step 3: Apply delta to model and evaluate
             attacked_model = self.apply_update_to_model(model, delta)
             new_acc = self.validate(attacked_model, self.pooled_balanced_loader)
             acc_drop = original_acc - new_acc
 
-            # Cosine distance logging
-            cos_dist = 1 - F.cosine_similarity(delta.unsqueeze(0), target_direction.unsqueeze(0), dim=1).item()
+            cos_dist = 1 - F.cosine_similarity(
+                delta.unsqueeze(0), target_direction.unsqueeze(0), dim=1
+            ).item()
+
             self.logger.info(
                 f"[FedOda][Craft] Attempt {attempt + 1}: ΔAcc = {acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
             )
 
-            # Success condition
+            # === Check if this attempt is harmful enough
             if acc_drop >= harm_threshold:
+                self.logger.info(f"[FedOda][Craft] Successful attack at attempt {attempt + 1}")
                 model.load_state_dict(original_model_state)
                 return delta.detach()
 
-            # Otherwise, keep best and relax constraint
+            # Track best effort
             if acc_drop > best_acc_drop:
                 best_acc_drop = acc_drop
                 best_delta = delta.detach()
 
-            scaling_cos_dist *= 1.10  # Relax constraint
+            # If any attempt reduced accuracy, set flag
+            if acc_drop < 0:
+                all_acc_improving = False
+
+            # === Step 4: Relax constraints and retry
+            scaling_cos_dist *= cos_growth
+            epsilon *= epsilon_growth
             model.load_state_dict(original_model_state)
 
-        self.logger.warning("[FedOda][Craft] Could not generate a harmful update. Returning best effort.")
-        # restore original model state
+        # === Final fallback
+        if all_acc_improving:
+            self.logger.warning("[FedOda][Craft] All attempted updates improved accuracy. Sending zero update.")
+            model.load_state_dict(original_model_state)
+            return torch.zeros_like(benign_update)
+
+        self.logger.warning("[FedOda][Craft] No harmful delta found. Returning best effort.")
         model.load_state_dict(original_model_state)
-        
         return best_delta
 
 
@@ -1148,11 +1202,28 @@ class FedOda:
         if self.server_model is None:
             self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
             return {}, {}
+
+        # === Update server model
+        self.previous_server_model = deepcopy(self.server_model)
+        self.server_model = deepcopy(mco_dict[-1]["c_model"])
+
+        # === Validate server model (always once per round)
+        acc_curr = self.validate(self.server_model, self.pooled_balanced_loader)
+        self.val_acc_pooled_history.append(acc_curr)
+
+        round_number = len(self.val_acc_pooled_history)
+        acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
+
+        # === If no malicious clients → skip PPO and attack
         if self.current_s_m == 0:
-            self.logger.warning("No malicious clients this round. Skipping attack.")
+            self.logger.info(f"[FedOda] No malicious clients selected in round {round_number}. Skipping attack.")
             return {}, {}
 
+        # === Proceed with regular attack
         return self._regular_attack(sample_num, batch_size, mco_dict, c_epochs)
+
+
+
 
 
     def estimate_client_distribution(self):
@@ -1319,9 +1390,10 @@ class FedOda:
                 )
         else:
             server_update_norm = 0.0
-        # Get the server model valid accuracy (Acc_m)
-        acc_m = self.validate(self.server_model, self.pooled_balanced_loader)
-        self.val_acc_pooled_history.append(acc_m)
+       
+        # # Get the server model valid accuracy (Acc_m)
+        # acc_curr = self.validate(self.server_model, self.pooled_balanced_loader)
+        # self.val_acc_pooled_history.append(acc_curr)
 
         if self.attack_mode == "BO":
             malicious_update_dict, malicious_update = bo_attack(
@@ -1336,48 +1408,34 @@ class FedOda:
                 avg_cos_distance, avg_l2_norm
             )
         elif self.attack_mode == "PPO":
+            # === Step 0: Measure current state
             round_number = len(self.val_acc_pooled_history)
-            # Accuracy BEFORE this round's action (used for state)
-            previous_acc = self.val_acc_pooled_history[-2] if len(self.val_acc_pooled_history) > 1 else 0.0
+            acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
+            acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
             malicious_participation_rate = self.current_s_m / self.malicious_clients_num
 
             curr_state = torch.tensor([
-                previous_acc,
+                acc_prev,
                 avg_cos_distance / 2.0,
                 avg_l2_norm / 100.0,
                 round_number / 500.0,
                 malicious_participation_rate
             ], dtype=torch.float32)
 
-            # Log transition from previous round, if exists
-            if hasattr(self, "ppo_prev_state"):
-                reward_scalar = self.ppo_agent.combine_reward(round_number - 1, self.ppo_prev_reward_vector)
-                r1, r2, r3 = self.ppo_prev_reward_vector
-                self.logger.info(f"[FedOda] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}")
-                self.ppo_agent.buffer.append((
-                    self.ppo_prev_state,
-                    self.ppo_prev_action,
-                    reward_scalar,
-                    self.ppo_prev_log_prob
-                ))
-            else:
-                r1, r2, r3 = 0.0, 0.0, 0.0
-                reward_scalar = 0.0
-
-            # Select new action
+            # === Step 1: Select action for current round
             action, log_prob = self.ppo_agent.select_action(curr_state)
 
-            # Save info for next round
+            # Save current state/action/log_prob for next round
             self.ppo_prev_state = curr_state
             self.ppo_prev_action = action
             self.ppo_prev_log_prob = log_prob
 
-            # Perform attack using selected action
+            # === Step 2: Perform attack using selected action → get reward from here
             malicious_update_dict, malicious_update, reward_vector = ppo_attack(
                 fedoda=self,
                 round_number=round_number,
-                prev_acc=previous_acc,
-                curr_acc=acc_m,
+                prev_acc=acc_prev,
+                curr_acc=acc_curr,
                 avg_cos_distance=avg_cos_distance,
                 avg_l2_distance=avg_l2_distance,
                 avg_update_norm=avg_l2_norm,
@@ -1388,16 +1446,34 @@ class FedOda:
                 action=action,
                 state=curr_state,
             )
+            
+            # ✅ Always unpack reward_vector
+            r1, r2, r3 = reward_vector.tolist()
 
-            # Save reward for logging next round
-            self.ppo_prev_reward_vector = reward_vector
+            # === Step 3: Log previous transition with reward from current attack
+            if hasattr(self, "ppo_prev_state"):
+                reward_scalar = self.ppo_agent.combine_reward(round_number - 1, reward_vector)
 
+                self.logger.info(
+                    f"[FedOda] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}"
+                )
 
-        acc_vail = self._evaluate_malicious_update(malicious_update)
-        self.logger.info(f"[FedOda] Malicious update validation accuracy: {acc_vail:.4f}")
+                self.ppo_agent.buffer.append((
+                    self.ppo_prev_state.detach(),
+                    self.ppo_prev_action.detach(),
+                    reward_vector.detach(),
+                    self.ppo_prev_log_prob.detach()
+                ))
+            else:
+                self.logger.warning("[FedOda] PPO previous state/action/log_prob not set. Skipping logging.")
+                reward_scalar = 0 
 
-        # Assemble malicious update dict
-        malicious_update_dict = vector_to_state_dict(malicious_update, self.server_model)
+            # === Step 4: Train PPO every few rounds
+            if round_number >= 5 and round_number % 2 == 0:
+                self.logger.info(f"[FedOda][PPO] Training PPO agent at round {round_number}")
+                self.ppo_agent.train(memory=self.ppo_agent.buffer, round_number=round_number)
+                self.ppo_agent.buffer.clear()
+
 
         # Shared logging
         self.log_attack_statistics(

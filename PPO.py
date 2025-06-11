@@ -88,7 +88,7 @@ class PPOAgent:
 
         # Smooth current action with previous one
         if hasattr(self, 'last_action') and self.last_action is not None:
-            alpha = 0.7  # Smoothing factor: higher = more stable
+            alpha = 0.6  # Smoothing factor: higher = more stable
             smoothed_action = alpha * action + (1 - alpha) * self.last_action.to(self.device)
             action = smoothed_action
 
@@ -134,8 +134,8 @@ class PPOAgent:
 
             # Normalize each reward
             r1_n = r1
-            r2_n = self.r2_normalizer.normalize(r2)
-            r3_n = self.r3_normalizer.normalize(r3)
+            r2_n = r2
+            r3_n = r3
 
             reward_vector = torch.tensor([r1_n, r2_n, r3_n], dtype=torch.float32, device=self.device)
 
@@ -147,56 +147,128 @@ class PPOAgent:
 
             return scalar_reward
         
-        
-    def store_experience(self, state, action, reward):
-        self.replay_buffer.append((state.detach().cpu(), action.detach().cpu(), reward.detach().cpu()))
+            
+    def store_experience(self, state, action, reward, log_prob=None):
+        import torch
+
+        # Convert state and action to tensors if needed
+        if not isinstance(state, torch.Tensor):
+            state = torch.tensor(state, dtype=torch.float32, device=self.device)
+        if not isinstance(action, torch.Tensor):
+            action = torch.tensor(action, dtype=torch.float32, device=self.device)
+
+        # Convert reward to tensor if needed
+        if not isinstance(reward, torch.Tensor):
+            reward = torch.tensor(reward, dtype=torch.float32, device=self.device)
+
+        # If reward is scalar, convert to shape (1,)
+        if reward.dim() == 0:
+            reward = reward.unsqueeze(0)
+
+        # Sanity check: reward shape must match reward_weights shape (if defined)
+        if hasattr(self, 'reward_weights') and self.reward_weights is not None:
+            expected_dim = self.reward_weights.shape[0]
+            if reward.shape[0] != expected_dim:
+                raise ValueError(
+                    f"[ERROR] Reward shape mismatch: got {reward.shape}, expected ({expected_dim},). "
+                    "Please ensure your environment or reward function returns the correct reward vector."
+                )
+
+        # Handle log_prob
+        if log_prob is None:
+            log_prob = torch.tensor(0.0, dtype=torch.float32, device=self.device)
+        elif not isinstance(log_prob, torch.Tensor):
+            log_prob = torch.tensor(log_prob, dtype=torch.float32, device=self.device)
+
+        # Store experience, detached and moved to CPU
+        self.replay_buffer.append((
+            state.detach().cpu(),
+            action.detach().cpu(),
+            reward.detach().cpu(),
+            log_prob.detach().cpu()
+        ))
 
 
-    def train(self, memory=None, batch_size=64, round_number=0, total_rounds=300):
-        # Store new memory into replay buffer
+    def train(self, memory=None, batch_size=10, round_number=0, total_rounds=300):
+        """
+        Train the PPO agent using collected memory.
+        Expects memory entries as 4-tuples: (state, action, reward_vector, log_prob)
+        """
+        # === Store new experiences into replay buffer ===
         if memory:
-            for state, action, reward in memory:
-                self.store_experience(state, action, reward)
+            for i, experience in enumerate(memory):
+                if not isinstance(experience, tuple) or len(experience) != 4:
+                    raise ValueError(f"[PPO] Invalid experience at index {i}: {experience}")
+                state, action, reward, log_prob = experience
+                print("reward", reward)
+                self.store_experience(state, action, reward, log_prob)
 
-        # Sample from replay buffer
+        # === Exit early if not enough data ===
         if len(self.replay_buffer) < batch_size:
-            return  # Not enough experience yet
+            if round_number % 5 == 0:  # Train every 5 rounds even with small batch
+                batch_size = len(self.replay_buffer)
+            else:
+                return
 
-        sampled = list(torch.utils.data.RandomSampler(self.replay_buffer, replacement=False, num_samples=batch_size))
-        sampled_batch = [self.replay_buffer[idx] for idx in sampled]
+        # === Sample from replay buffer ===
+        sampled_indices = list(torch.utils.data.RandomSampler(
+            self.replay_buffer, replacement=False, num_samples=batch_size))
+        sampled_batch = [self.replay_buffer[idx] for idx in sampled_indices]
 
-        states, actions, rewards = zip(*sampled_batch)
+        # === Unpack 4-tuple format ===
+        states, actions, rewards, log_probs = zip(*sampled_batch)
 
-        states = torch.stack([s.to(self.device) for s in states])
-        actions = torch.stack([a.to(self.device) for a in actions])
-        rewards = torch.stack([r.to(self.device) for r in rewards])
+        states     = torch.stack([s.to(self.device) for s in states])
+        actions    = torch.stack([a.to(self.device) for a in actions])
+        rewards    = torch.stack([r.to(self.device) for r in rewards])  # (B, D)
+        log_probs  = torch.stack([lp.to(self.device) for lp in log_probs])
 
-        # Compute returns
+        # === Compute returns ===
         self.use_mo = True
-        returns = self.compute_returns(rewards)
-        returns = torch.stack(returns)
+        returns = self.compute_returns(rewards)  # List of tensors or tensor
+        returns = torch.stack(returns)           # Possibly (D, B)
+
+        # 🔄 Transpose if needed
+        if returns.shape[0] == self.reward_weights.shape[0]:
+            returns = returns.T  # Ensure shape (B, D)
+
+
+        print("==== DEBUGGING SHAPES ====")
+        print(f"rewards shape: {rewards.shape}")
+        print(f"returns (before stack) type: {type(returns)}")
+        if isinstance(returns, list):
+            for i, ret in enumerate(returns):
+                print(f"returns[{i}] shape: {ret.shape}")
+        print(f"returns (after stack) shape: {returns.shape}")
+        print(f"reward_weights shape: {self.reward_weights.shape}")
+        print("returns (actual content):", returns)
+        print("reward_weights (actual content):", self.reward_weights)
+        print("===========================")
+
+        # === Combine multi-objective reward (if applicable) ===
         if self.reward_weights is not None:
-            returns = torch.matmul(returns, self.reward_weights.unsqueeze(1))  # shape: (batch, 1)
+            returns = torch.matmul(returns, self.reward_weights.unsqueeze(1))  # (B, 1)
         else:
-            returns = returns.mean(dim=1, keepdim=True)
+            returns = returns.mean(dim=1, keepdim=True)  # (B, 1)
 
-
-        # Normalize returns
+        # === Normalize returns ===
         returns = (returns - returns.mean()) / (returns.std() + 1e-8)
 
-        # Get old action predictions using frozen policy
+        # === Get old log_probs from frozen policy ===
         with torch.no_grad():
             mean_old, std_old, _ = self.policy(states)
             dist_old = torch.distributions.Normal(mean_old, std_old)
             log_probs_old = dist_old.log_prob(actions).sum(dim=1, keepdim=True)
 
+        # === PPO Optimization ===
         for _ in range(5):  # PPO epochs
             mean_new, std_new, state_values = self.policy(states)
             dist_new = torch.distributions.Normal(mean_new, std_new)
+
             log_probs_new = dist_new.log_prob(actions).sum(dim=1, keepdim=True)
             entropy = dist_new.entropy().sum(dim=1, keepdim=True)
 
-            # PPO clipped objective
+            # PPO clipped surrogate loss
             ratios = torch.exp(log_probs_new - log_probs_old)
             advantages = returns - state_values.detach()
 
@@ -206,12 +278,12 @@ class PPOAgent:
 
             critic_loss = nn.MSELoss()(state_values, returns)
 
-            # Anneal entropy bonus based on training round
-            # You need to pass round_number into train() for this to work
-            entropy_weight = max(0.01 * (1 - round_number / total_rounds), 0.001)
-            loss = actor_loss + 0.5 * critic_loss - entropy_weight * entropy.mean()
+            # Optional: Anneal entropy bonus over time
+            # entropy_weight = max(0.01 * (1 - round_number / total_rounds), 0.001)
 
+            loss = actor_loss + 0.5 * critic_loss - 0.01 * entropy.mean()
 
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
+

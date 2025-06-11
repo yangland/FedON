@@ -1,11 +1,11 @@
-cuda_device: 0
+cuda_device: 1
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: 'trimmed_mean' # "multi-krum", "fedavg", "fltrust"
-aggr_c_lr: 1 # 0.75
+aggr: "fedavg" # "multi-krum", "fedavg", "fltrust"
+aggr_c_lr: 0.5 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
 
@@ -17,7 +17,7 @@ sensor_embed_dim: 256
 
 # fl client
 n: 100 # total clients 
-m: 20 # malicious clients
+m: 30 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
@@ -35,7 +35,7 @@ c_lr: 0.0001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 500
+fl_iter_num: 100
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1

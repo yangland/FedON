@@ -45,22 +45,12 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     
     if attack_method == 'FedOda':
         selected_malicious_ids = set(client_selection) & set(malicious_client_ids)
-        if selected_malicious_ids:
-            if fedoda_attacker.server_model is None:
-                fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
-            else:
-                fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
-                fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+        if fedoda_attacker.server_model is None:
+            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
         else:
-            logger.info(f"[FedOda] No malicious clients selected in iteration {iter}, skipping PPO attack.")
-            
-            fedoda_attacker.log_to_full_history(
-            r1=None, r2=None, r3=None,
-            scalar_reward=None,
-            cos_delta=None, cos_b_b=None,
-            l2_delta=None, l2_b_b=None,
-            model_cos_delta=None, model_cos_b_b=None
-            )
+            fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
+            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+
             
         fedoda_attacker.current_s_m = len(selected_malicious_ids)
     elif attack_method == 'MPAF':
@@ -159,19 +149,14 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
         if FedOda_class is None:
             raise ValueError("FedOda_class is not initialized.")
 
-        if len(malicious_client_ids) == 0:
-            logger.warning(f"[FedOda] No malicious clients selected in this round. Skipping RL attack.")
-            foda_update_dict = {}
-            malicious_update = {}
-            # foda_posterior remains unchanged or set to 0
-        else:
-            foda_update_dict, malicious_update = \
-                FedOda_class.attack(
-                    sample_num=3, 
-                    batch_size=batch_size, 
-                    mco_dict=mco_dict, 
-                    c_epochs=c_epochs
-                )
+        foda_update_dict, malicious_update = \
+            FedOda_class.attack(
+                sample_num=3, 
+                batch_size=batch_size, 
+                mco_dict=mco_dict, 
+                c_epochs=c_epochs
+            )
+
 
     
     # malicious clients
