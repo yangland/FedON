@@ -284,8 +284,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
         client_selection = random.sample(client_list, clients_per_iter)
         client_selection.sort()
-        logger.info(f"FL iteration: {iter}, selected clients: {client_selection}")
-        
+        logger.info(f"FL iteration: {iter}, AGR: {aggr}, selected clients: {client_selection} ")
+
         # client_selection csv logging
         client_selection_dict, _ = create_client_weights(client_selection, client_selection, client_list)
         clients_selection_csv.append_save_csv([iter] + list(dict(sorted(client_selection_dict.items())).values()))
@@ -295,10 +295,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         server_before = flatten_model(mco_dict[-1]["c_model"].state_dict())
         
         # local training for clients' C models including attack
-        c_grad_dict, foda_posterior = fl_iteration(iter, client_selection, malicious_client_ids,
-                                   attack_method, c_epochs, fl_data_dict, mco_dict, 
-                                   client_batch_size, dba_poisoning_per_batch, 
-                                   fedoda_attacker = foda, malicious_fraction= malicious_fraction,
+        c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
+                                   attack_method, c_epochs, fl_data_dict, mco_dict,
+                                   client_batch_size, dba_poisoning_per_batch,
+                                   fedoda_attacker=foda, malicious_fraction=malicious_fraction,
                                    device=device)
 
         server_after = flatten_model(mco_dict[-1]["c_model"].state_dict())
@@ -430,15 +430,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         # for FLAME and Krum, check the clients selection's malicious rate
         if benign_client_ids:
             mistake_rate = len(set(benign_client_ids) & set(malicious_client_ids)) / len(benign_client_ids)
-            mistakes_csv.append_save_csv([iter, mistake_rate, foda_posterior])  # Add posterior here
+            mistakes_csv.append_save_csv([iter, mistake_rate])
             mistake_history.append(mistake_rate)
             logger.info(f"{aggr}-{attack_method} mistake_rate = {mistake_rate*100:.2f}%")
 
-            if attack_method == 'FedOda':
-                if foda_posterior==None: 
-                    foda_posterior = 0
-                logger.info(f"[FedOda] iter {iter}: mistake_rate = {mistake_rate:.4f}, posterior = {foda_posterior:.4f}")
-     
         e = int((time.time()-t1)/(iter+1) * (fl_iter_num - iter))
         print("Remaining Time (approx.):", '{:02d}:{:02d}:{:02d}'.format(e // 3600, (e % 3600 // 60), e % 60),
                 "[{:.2f}%]\n".format(iter / fl_iter_num * 100))
@@ -545,22 +540,21 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
         # --- Plot full history from FedOda ---
         if fedoda_metrics:
             print("\nDEBUG: FedOda metrics keys:", fedoda_metrics.keys())  # Check available keys
-            print("DEBUG: norm_scaling_l2 values:", fedoda_metrics.get("norm_scaling_l2", "MISSING"))
-            print("DEBUG: mapped_scaling_l2 values:", fedoda_metrics.get("mapped_scaling_l2", "MISSING"))
-            
+            # print("DEBUG: norm_scaling_l2 values:", fedoda_metrics.get("norm_scaling_l2", "MISSING"))
+            # print("DEBUG: mapped_scaling_l2 values:", fedoda_metrics.get("mapped_scaling_l2", "MISSING"))      
             
             def try_get(key): return fedoda_metrics.get(key, [])
             
             # Group 1: s_b and s_hat
-            plot_multi_curves(
-                {
-                    "$s_b$ (estimated benign clients)": try_get("s_b"),
-                    "$\hat{s}$ (estimated total clients)": try_get("s_hat")
-                },
-                title="Estimated Client Selection",
-                filename="clients_estimation",
-                save_dir=plots_dir
-            )
+            # plot_multi_curves(
+            #     {
+            #         "$s_b$ (estimated benign clients)": try_get("s_b"),
+            #         "$\hat{s}$ (estimated total clients)": try_get("s_hat")
+            #     },
+            #     title="Estimated Client Selection",
+            #     filename="clients_estimation",
+            #     save_dir=plots_dir
+            # )
 
             # Group 2: benign_norm and server_update_norm
             plot_multi_curves(
@@ -574,50 +568,62 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             )
 
             # Group 3: Cosine distances
-            plot_multi_curves(
-                {
-                    "cos_d(Δs, Δb')": try_get("cos_d1"),
-                    "cos_d(Δs, Δs')": try_get("cos_d2"),
-                    "cos_d(Δs, Δm)": try_get("cos_d3"),
-                    "cos_d(Δb', Δm)": try_get("cos_d4"),
-                },
-                title="Cosine Distances",
-                filename="cosine_distances",
-                save_dir=plots_dir
-            )
+            # plot_multi_curves(
+            #     {
+            #         "cos_d(Δs, Δb')": try_get("cos_d1"),
+            #         "cos_d(Δs, Δs')": try_get("cos_d2"),
+            #         "cos_d(Δs, Δm)": try_get("cos_d3"),
+            #         "cos_d(Δb', Δm)": try_get("cos_d4"),
+            #     },
+            #     title="Cosine Distances",
+            #     filename="cosine_distances",
+            #     save_dir=plots_dir
+            # )
 
             # Group 4: L2 distances
-            plot_multi_curves(
-                {
-                    "L2(Δs, Δb')": try_get("l2_d1"),
-                    "L2(Δs, Δs')": try_get("l2_d2"),
-                    "L2(Δs, Δm)": try_get("l2_d3"),
-                    "L2(Δb', Δm)": try_get("l2_d4"),
-                },
-                title="L2 Distances",
-                filename="l2_distances",
-                save_dir=plots_dir
-            )
+            # plot_multi_curves(
+            #     {
+            #         "L2(Δs, Δb')": try_get("l2_d1"),
+            #         "L2(Δs, Δs')": try_get("l2_d2"),
+            #         "L2(Δs, Δm)": try_get("l2_d3"),
+            #         "L2(Δb', Δm)": try_get("l2_d4"),
+            #     },
+            #     title="L2 Distances",
+            #     filename="l2_distances",
+            #     save_dir=plots_dir
+            # )
 
             # Group 5: mean log-likelihood and posterior
-            plot_twin_curves(
-                {
-                    "Mean Log-Likelihood": try_get("mean_log_likelihood"),
-                    "Posterior P(H1|D)": try_get("posterior")
-                },
-                title="Bayesian Inference Metrics",
-                filename="bayesian_inference",
-                save_dir=plots_dir,
-            )
+            # plot_twin_curves(
+            #     {
+            #         "Mean Log-Likelihood": try_get("mean_log_likelihood"),
+            #         "Posterior P(H1|D)": try_get("posterior")
+            #     },
+            #     title="Bayesian Inference Metrics",
+            #     filename="bayesian_inference",
+            #     save_dir=plots_dir,
+            # )
 
 
-            plot_twin_curves(
+            # plot_twin_curves(
+            #     {
+            #         "scaling_factor": try_get("scaling_factor"),
+            #         "Posterior P(H1|D)": try_get("posterior")
+            #     },
+            #     title="Scaling_factor vs posterior",
+            #     filename="scalling_factor",
+            #     save_dir=plots_dir,
+            # )
+
+            plot_multi_curves(
                 {
-                    "scaling_factor": try_get("scaling_factor"),
-                    "Posterior P(H1|D)": try_get("posterior")
+                    "Reward 1 (r1)": try_get("r1"),
+                    "Reward 2 (r2)": try_get("r2"),
+                    "Reward 3 (r3)": try_get("r3"),
+                    "Accuracy": acc_vail_hist  # Assuming this is accessible
                 },
-                title="Scaling_factor vs posterior",
-                filename="scalling_factor",
+                title="PPO Rewards and Accuracy",
+                filename="ppo_rewards_and_accuracy",
                 save_dir=plots_dir,
             )
 

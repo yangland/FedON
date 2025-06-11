@@ -49,7 +49,7 @@ class FedOda:
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
         self.attack_mode = "PPO" # 'BO', "BI", "PPO"
-        self.ppo_agent = PPOAgent(state_dim=4, action_dim=2, device=device, mo_weights=[0.1, 0.6, 0.3])  # 4 state features, 2 action dims
+        self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.1, 0.6, 0.3])  # 5 state features, 2 action dims
         self.ppo_episode_memory = []
         self.prev_server_model = None
         self.prev_global_update = None
@@ -421,12 +421,35 @@ class FedOda:
         return posterior, mean_log_likelihood
 
 
+    def compute_attack_influence_r1(self, curr_acc, target_acc=0.2, tolerance=0.05):
+        """
+        r1 consists of:
+        - Attack success (low accuracy)
+        - Maintenance reward (staying low)
+        - No reward when above threshold
+        """
+        # Normalize reward if under target
+        attack_success = max(0.0, (target_acc - curr_acc) / target_acc)
+
+        # Maintenance reward
+        if curr_acc <= target_acc + tolerance:
+            maintenance_bonus = 0.2  # small constant bonus
+        else:
+            maintenance_bonus = 0.0
+
+        r1 = attack_success + maintenance_bonus
+        return min(r1, 1.0)  # cap to 1.0
+
+
     def compute_attack_influence_r3(self):
         """
-        Compute r3 = cos_b_dist / (cos_b_dist + cos_m_dist)
-        Measures influence of attack vs. benign update.
-        Normalized to [0, 1] for stability.
+        Compute r3 = (cos_b_dist - cos_m_dist) / (cos_b_dist + cos_m_dist)
+        This measures the relative influence of benign vs. malicious updates.
+        - r3 ∈ [-1, 1]
+        - Positive r3: malicious update had greater influence
+        - Negative r3: benign update had greater influence
         """
+
         if (self.prev_server_model is None or
             self.prev_benign_update is None or
             self.prev_malicious_update is None):
@@ -444,11 +467,14 @@ class FedOda:
         cos_b_dist = 1 - cos_b
         cos_m_dist = 1 - cos_m
 
-        # Compute normalized r3 ∈ [0, 1]
-        r3 = cos_b_dist / (cos_b_dist + cos_m_dist + 1e-8)
+        # Compute signed, bounded r3 ∈ [-1, 1]
+        numerator = cos_b_dist - cos_m_dist
+        denominator = cos_b_dist + cos_m_dist + 1e-8
+        r3 = numerator / denominator
 
-        self.logger.info(f"[FedOda] r3 attack influence: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, r3 = {r3:.4f}")
+        self.logger.info(f"[FedOda] r3: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, r3 = {r3:.4f}")
         return r3
+
 
 
     def mali_update_craft_l2_cos(self, model, benign_update, target_direction, scaling_cos_dist,
@@ -1121,13 +1147,12 @@ class FedOda:
     def attack(self, sample_num=3, batch_size=64, mco_dict=None, c_epochs=1):
         if self.server_model is None:
             self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
-            return None, None, None
+            return {}, {}
+        if self.current_s_m == 0:
+            self.logger.warning("No malicious clients this round. Skipping attack.")
+            return {}, {}
 
-        # if self.previous_server_model is None:
-        #     return self._first_iteration_attack()
-        # else:
-
-        return self._regular_attack(sample_num, batch_size, mco_dict, c_epochs, target_layers=None)
+        return self._regular_attack(sample_num, batch_size, mco_dict, c_epochs)
 
 
     def estimate_client_distribution(self):
@@ -1175,48 +1200,65 @@ class FedOda:
         return v
 
 
-    def log_to_full_history(self, *, s_b=None, s_hat=None,
+    def log_to_full_history(self, *,
+                            s_b=None, s_hat=None,
                             benign_norm=None, server_update_norm=None,
-                            cos_d1=None, cos_d2=None, cos_d3=None, cos_d4=None,
-                            l2_d1=None, l2_d2=None, l2_d3=None, l2_d4=None,
-                            l=None, posterior=None, norm_scaling_l2=None, norm_scaling_cos=None,
-                            mapped_scaling_l2=None, mapped_scaling_cos=None):
+                            posterior=None,
+                            norm_scaling_l2=None, norm_scaling_cos=None,
+                            mapped_scaling_l2=None, mapped_scaling_cos=None,
+                            r1=None, r2=None, r3=None,
+                            scalar_reward=None,
+                            cos_delta=None, cos_b_b=None,
+                            l2_delta=None, l2_b_b=None,
+                            model_cos_delta=None, model_cos_b_b=None):
         """
         Logs a single iteration's key metrics to self.full_history.
         """
 
         if not hasattr(self, "full_history"):
-            self.full_history = {
-                "s_b": [], "s_hat": [],
-                "benign_norm": [], "server_update_norm": [],
-                "cos_d1": [], "cos_d2": [], "cos_d3": [], "cos_d4": [],
-                "l2_d1": [], "l2_d2": [], "l2_d3": [], "l2_d4": [],
-                "mean_log_likelihood": [], "posterior": [],
-                "scaling_factor": [], "epsilon": [],
-                "norm_scaling_l2": [], "norm_scaling_cos": [],
-                "mapped_scaling_l2": [], "mapped_scaling_cos": []
-            }
+            self.full_history = {}
 
+        # Ensure all required keys exist
+        keys_to_init = {
+            "s_b": [], "s_hat": [],
+            "benign_norm": [], "server_update_norm": [],
+            "posterior": [],
+            "scaling_factor": [], "epsilon": [],
+            "norm_scaling_l2": [], "norm_scaling_cos": [],
+            "mapped_scaling_l2": [], "mapped_scaling_cos": [],
+            "r1": [], "r2": [], "r3": [], "scalar_reward": [],
+            "cos_delta": [], "cos_b_b": [],
+            "l2_delta": [], "l2_b_b": [],
+            "model_cos_delta": [], "model_cos_b_b": [],
+        }
+
+        for key, default in keys_to_init.items():
+            if key not in self.full_history:
+                self.full_history[key] = default
+
+        # Append values
         self.full_history["s_b"].append(s_b)
         self.full_history["s_hat"].append(s_hat)
         self.full_history["benign_norm"].append(benign_norm)
         self.full_history["server_update_norm"].append(server_update_norm)
-        self.full_history["cos_d1"].append(cos_d1)
-        self.full_history["cos_d2"].append(cos_d2)
-        self.full_history["cos_d3"].append(cos_d3)
-        self.full_history["cos_d4"].append(cos_d4)
-        self.full_history["l2_d1"].append(l2_d1)
-        self.full_history["l2_d2"].append(l2_d2)
-        self.full_history["l2_d3"].append(l2_d3)
-        self.full_history["l2_d4"].append(l2_d4)        
-        self.full_history["mean_log_likelihood"].append(l)
         self.full_history["posterior"].append(posterior)
         self.full_history["scaling_factor"].append(self.scaling_factor)
         self.full_history["epsilon"].append(self.epsilon)
         self.full_history["norm_scaling_l2"].append(norm_scaling_l2)
         self.full_history["norm_scaling_cos"].append(norm_scaling_cos)
         self.full_history["mapped_scaling_l2"].append(mapped_scaling_l2)
-        self.full_history["mapped_scaling_cos"].append(mapped_scaling_cos) 
+        self.full_history["mapped_scaling_cos"].append(mapped_scaling_cos)
+
+        self.full_history["r1"].append(r1)
+        self.full_history["r2"].append(r2)
+        self.full_history["r3"].append(r3)
+        self.full_history["scalar_reward"].append(scalar_reward)
+        self.full_history["cos_delta"].append(cos_delta)
+        self.full_history["cos_b_b"].append(cos_b_b)
+        self.full_history["l2_delta"].append(l2_delta)
+        self.full_history["l2_b_b"].append(l2_b_b)
+        self.full_history["model_cos_delta"].append(model_cos_delta)
+        self.full_history["model_cos_b_b"].append(model_cos_b_b)
 
 
     def log_attack_statistics(self, logger, benign_update, malicious_update, avg_l2_dist, avg_cos_distance,
@@ -1250,7 +1292,7 @@ class FedOda:
         )
 
 
-    def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs, target_layers="none"):
+    def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs):
         # Step1. perform analysis
         self.logger.info("[FedOda] Step 1: Computing best attack direction (g_m)")
         g_m_dict, g_m = self.get_attack_direction(self.server_model, self.pooled_loader)
@@ -1263,13 +1305,20 @@ class FedOda:
         )
 
         self.logger.info("[FedOda] Step 3: Simulating benign updates for sampled clients")
-        avg_l2_distance, avg_cos_distance, avg_update_norm, avg_full_model_cos = \
+        avg_l2_distance, avg_cos_distance, avg_l2_norm, avg_full_model_cos = \
             self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
 
         # Get the estimated benign model update(\Delta_b'), and the best attack direction (g_m)   
-        avg_l2_norm = avg_update_norm
-        benign_update = avg_update_norm * benign_direction
+        benign_update = avg_l2_norm * benign_direction
         mali_direction = g_m
+        if self.prev_server_model!=None:
+            server_update_norm = self._calculate_update_distance(
+                    self.prev_server_model.state_dict(), 
+                    self.server_model.state_dict(), 
+                    distance_type='l2'
+                )
+        else:
+            server_update_norm = 0.0
         # Get the server model valid accuracy (Acc_m)
         acc_m = self.validate(self.server_model, self.pooled_balanced_loader)
         self.val_acc_pooled_history.append(acc_m)
@@ -1277,7 +1326,7 @@ class FedOda:
         if self.attack_mode == "BO":
             malicious_update_dict, malicious_update = bo_attack(
                 self, mali_direction, benign_update,
-                avg_cos_distance, avg_l2_norm, avg_update_norm,
+                avg_cos_distance, avg_l2_norm, avg_l2_norm,
                 self.val_acc_pooled_history
             )
         elif self.attack_mode == "BI":  # Default BI mode
@@ -1288,20 +1337,61 @@ class FedOda:
             )
         elif self.attack_mode == "PPO":
             round_number = len(self.val_acc_pooled_history)
-            prev_acc = self.val_acc_pooled_history[-2] if len(self.val_acc_pooled_history) > 1 else 0.0
+            # Accuracy BEFORE this round's action (used for state)
+            previous_acc = self.val_acc_pooled_history[-2] if len(self.val_acc_pooled_history) > 1 else 0.0
+            malicious_participation_rate = self.current_s_m / self.malicious_clients_num
 
-            malicious_update_dict, malicious_update, reward = ppo_attack(
-                fedoda = self,
+            curr_state = torch.tensor([
+                previous_acc,
+                avg_cos_distance / 2.0,
+                avg_l2_norm / 100.0,
+                round_number / 500.0,
+                malicious_participation_rate
+            ], dtype=torch.float32)
+
+            # Log transition from previous round, if exists
+            if hasattr(self, "ppo_prev_state"):
+                reward_scalar = self.ppo_agent.combine_reward(round_number - 1, self.ppo_prev_reward_vector)
+                r1, r2, r3 = self.ppo_prev_reward_vector
+                self.logger.info(f"[FedOda] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}")
+                self.ppo_agent.buffer.append((
+                    self.ppo_prev_state,
+                    self.ppo_prev_action,
+                    reward_scalar,
+                    self.ppo_prev_log_prob
+                ))
+            else:
+                r1, r2, r3 = 0.0, 0.0, 0.0
+                reward_scalar = 0.0
+
+            # Select new action
+            action, log_prob = self.ppo_agent.select_action(curr_state)
+
+            # Save info for next round
+            self.ppo_prev_state = curr_state
+            self.ppo_prev_action = action
+            self.ppo_prev_log_prob = log_prob
+
+            # Perform attack using selected action
+            malicious_update_dict, malicious_update, reward_vector = ppo_attack(
+                fedoda=self,
                 round_number=round_number,
-                prev_acc=prev_acc,
+                prev_acc=previous_acc,
                 curr_acc=acc_m,
                 avg_cos_distance=avg_cos_distance,
                 avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_update_norm,
+                avg_update_norm=avg_l2_norm,
                 avg_full_model_cos=avg_full_model_cos,
+                malicious_participation_rate=malicious_participation_rate,
                 mali_direction=mali_direction,
-                benign_update=benign_update
+                benign_update=benign_update,
+                action=action,
+                state=curr_state,
             )
+
+            # Save reward for logging next round
+            self.ppo_prev_reward_vector = reward_vector
+
 
         acc_vail = self._evaluate_malicious_update(malicious_update)
         self.logger.info(f"[FedOda] Malicious update validation accuracy: {acc_vail:.4f}")
@@ -1323,24 +1413,30 @@ class FedOda:
         self.log_to_full_history(
             s_b=None,
             s_hat=None,
-            benign_norm=simulated_norm,
-            server_update_norm=None,
-            cos_d1=None, cos_d2=None, cos_d3=None, cos_d4=None,
-            l2_d1=None, l2_d2=None, l2_d3=None, l2_d4=None,
-            l=None,
+            benign_norm=avg_l2_norm,
+            server_update_norm=server_update_norm,
+            r1=r1,
+            r2=r2,
+            r3=r3,
+            scalar_reward=reward_scalar,
+            cos_delta=None,
+            cos_b_b=avg_cos_distance,
+            l2_delta=None,
+            l2_b_b=avg_l2_distance,
+            model_cos_delta=None,
+            model_cos_b_b=avg_full_model_cos,
             posterior=None,
-            norm_scaling_cos=None if self.attack_mode == "BO" else None,
-            norm_scaling_l2=None  if self.attack_mode == "BO" else None,
-            mapped_scaling_cos=self.scaling_cos if self.attack_mode == "BO" else None,
-            mapped_scaling_l2=self.scaling_l2 if self.attack_mode == "BO" else None,
-            )
+            norm_scaling_l2=action[0].item(),
+            norm_scaling_cos=action[1].item(),
+            mapped_scaling_l2=self.scaling_l2,
+            mapped_scaling_cos=self.scaling_cos,
+        )
 
         self.prev_s_m = self.current_s_m
-        posterior = None if self.attack_mode == "BO" else 1  # Optional: handle posterior from BI inference if needed
         
         # Store for next round
         self.prev_server_model = deepcopy(self.server_model)
         self.prev_benign_update = benign_update.clone().detach()
         self.prev_malicious_update = malicious_update.clone().detach()
 
-        return malicious_update_dict, malicious_update, posterior
+        return malicious_update_dict, malicious_update

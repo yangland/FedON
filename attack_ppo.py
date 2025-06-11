@@ -12,8 +12,11 @@ def ppo_attack(
     avg_l2_distance,
     avg_update_norm,
     avg_full_model_cos,
+    malicious_participation_rate,
     mali_direction,
-    benign_update
+    benign_update,
+    action,
+    state,
 ):
     """
     Perform PPO-guided attack.
@@ -21,19 +24,6 @@ def ppo_attack(
     iter = round_number + 1
 
     fedoda.logger.info(f"[FedOda][PPO] Server model pooled dataset validation (last 5): {[round(x, 4) for x in fedoda.val_acc_pooled_history[-5:]]}")
-
-    # === State Vector ===
-    state = torch.tensor([
-        prev_acc,
-        avg_cos_distance,
-        avg_l2_distance,
-        round_number / 100.0  # normalized round
-    ], dtype=torch.float32)
-
-    # === Action ===
-    with torch.no_grad():
-        action, log_prob = fedoda.ppo_agent.select_action(state)
-    fedoda.logger.info(f"[FedOda][PPO] Raw PPO action: {action} (log_prob={log_prob})")
 
     norm_scaling_l2 = action[0].item()
     norm_scaling_cos = action[1].item()
@@ -85,22 +75,22 @@ def ppo_attack(
 
     # === Rewards ===
     # Long-term accuracy reward
-    beta = 0.05
+    # beta = 0.05
     # r1 = (1 - curr_acc) * (1 - np.exp(-beta * iter))
-    r1 = 1 - curr_acc
+    r1 = fedoda.compute_attack_influence_r1(curr_acc, target_acc=0.2, tolerance=0.05)
     # Short term accuracy drop reward
     r2 = prev_acc - curr_acc
     # Cos distance reward
     r3 = fedoda.compute_attack_influence_r3() or 0.0
     fedoda.logger.info(f"[FedOda][PPO] Rewards: r1={r1:.4f}, r2={r2:.4f}, r3={r3:.4f}")
     
-    reward = torch.tensor([r1, r2, r3], dtype=torch.float32)
+    reward_vector = torch.tensor([r1, r2, r3], dtype=torch.float32)
 
     
     fedoda.ppo_episode_memory.append((
         state.detach(),                # Detach and move to CPU (optional for safety)
         action.detach(),
-        reward.detach()
+        reward_vector.detach()
     ))
 
 
@@ -109,11 +99,11 @@ def ppo_attack(
     # Train every 5 rounds if enough data is collected
     if iter % 5 == 0 and len(fedoda.ppo_episode_memory) >= 5:
         fedoda.logger.info(f"[FedOda][PPO] Training PPO agent with {len(fedoda.ppo_episode_memory)} new steps.")
-        fedoda.ppo_agent.train(memory=fedoda.ppo_episode_memory)
+        weighted_reward = fedoda.ppo_agent.train(memory=fedoda.ppo_episode_memory)
         
         # Only clear the episode buffer (not the replay buffer)
         fedoda.ppo_episode_memory.clear()
 
 
     malicious_update_dict = vector_to_state_dict(malicious_update, fedoda.server_model)
-    return malicious_update_dict, malicious_update, reward
+    return malicious_update_dict, malicious_update, reward_vector

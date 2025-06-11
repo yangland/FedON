@@ -39,23 +39,33 @@ import torch.nn.functional as F
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, dba_poisoning_per_batch=0.2, 
                     fedoda_attacker=None, malicious_fraction=None, device=None):
-    foda_posterior = None
     mpaf_attacker = None # initialize
     # Add at start of function
     torch.cuda.empty_cache()
     
-    if attack_method == 'FedOda' and bool(set(client_selection) & set(malicious_client_ids)):
-        if fedoda_attacker.server_model is None:
-            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+    if attack_method == 'FedOda':
+        selected_malicious_ids = set(client_selection) & set(malicious_client_ids)
+        if selected_malicious_ids:
+            if fedoda_attacker.server_model is None:
+                fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+            else:
+                fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
+                fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
         else:
-            fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
-            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
-
-        fedoda_attacker.current_s_m = len(set(client_selection) & set(malicious_client_ids))
+            logger.info(f"[FedOda] No malicious clients selected in iteration {iter}, skipping PPO attack.")
+            
+            fedoda_attacker.log_to_full_history(
+            r1=None, r2=None, r3=None,
+            scalar_reward=None,
+            cos_delta=None, cos_b_b=None,
+            l2_delta=None, l2_b_b=None,
+            model_cos_delta=None, model_cos_b_b=None
+            )
+            
+        fedoda_attacker.current_s_m = len(selected_malicious_ids)
     elif attack_method == 'MPAF':
         mpaf_attacker = MPAFAttack(model_type="c_model")
 
-    
     c_sd_before = train_c_models(client_selection, 
                                     fl_data_dict,
                                     batch_size, 
@@ -69,11 +79,10 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     c_grad_dict = {}
 
     # process for both benign and malicious clients
-    c_grad_dict, foda_posterior = grad_process_c_model(mco_dict, client_selection, c_sd_before,
+    c_grad_dict= grad_process_c_model(mco_dict, client_selection, c_sd_before,
                                             malicious_client_ids, attack_method, fedoda_attacker,
-                                             foda_posterior, mpaf_attacker, malicious_fraction,
+                                              mpaf_attacker, malicious_fraction,
                                              batch_size, c_epochs, device)
-
     
     # Add before return cleanup memory
     for client_id in client_selection:
@@ -82,7 +91,7 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
                 if torch.is_tensor(c_sd_before[client_id][k]):
                     c_sd_before[client_id][k] = c_sd_before[client_id][k].cpu()
     
-    return c_grad_dict, foda_posterior
+    return c_grad_dict
 
 
 
@@ -132,7 +141,7 @@ attack_magnitude_mapping = {
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, foda_posterior, mpaf_attacker, malicious_fraction, 
+                         FedOda_class, mpaf_attacker, malicious_fraction, 
                          batch_size, c_epochs, device):
     c_grad_dict = {}
 
@@ -147,14 +156,23 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     attack_magnitude = attack_magnitude_mapping.get(attack_method, 1)
     
     if attack_method == 'FedOda':
-        if FedOda_class is not None:
-            foda_update_dict, malicious_update, foda_posterior = \
-                FedOda_class.attack(sample_num=3, 
-                                    batch_size=batch_size, 
-                                    mco_dict=mco_dict, 
-                                    c_epochs=c_epochs)
-        else:
+        if FedOda_class is None:
             raise ValueError("FedOda_class is not initialized.")
+
+        if len(malicious_client_ids) == 0:
+            logger.warning(f"[FedOda] No malicious clients selected in this round. Skipping RL attack.")
+            foda_update_dict = {}
+            malicious_update = {}
+            # foda_posterior remains unchanged or set to 0
+        else:
+            foda_update_dict, malicious_update = \
+                FedOda_class.attack(
+                    sample_num=3, 
+                    batch_size=batch_size, 
+                    mco_dict=mco_dict, 
+                    c_epochs=c_epochs
+                )
+
     
     # malicious clients
     for client_id in malicious_client_ids:
@@ -225,12 +243,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
             mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])
             c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_grad_dict[client_id].items()}
 
-        # except Exception as e:
-        #     logger.error(f"Error processing client {client_id} with attack {attack_method}: {e}")
-        #     mco_dict[client_id]["c_model"].load_state_dict(c_sd_before[client_id])  # Revert to safe state
-        #     c_grad_dict[client_id] = {k: torch.zeros_like(v) for k, v in c_sd_before[client_id].items()}  # Zero out gradients
-
-    return c_grad_dict, foda_posterior
+    return c_grad_dict
 
 def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, dirichlet_alpha, fl_train, fl_class_num):
     logger.info(f"non-iid type: {noniid_type}")

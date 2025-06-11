@@ -1,4 +1,4 @@
-cuda_device: 1
+cuda_device: 2
 if_series: True
 
 # defense methods
@@ -25,7 +25,7 @@ c_model: "ConvNet" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alphas: [0.1, 0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: ['none',  'FedOda', 'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang']
+attack_methods: ['none',  'FedOda', 'MPAF',  'LIE', 'label_perturbation']
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
@@ -35,7 +35,7 @@ c_lr: 0.00001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 200
+fl_iter_num: 300
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
