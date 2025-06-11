@@ -229,7 +229,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     malicious_client_ids=malicious_client_ids,
                     fl_mali_data_dict = fl_mali_data_dict,
                     E=params['fedoda']['E'],
-                    scaling_factor=params['fedoda']['scaling_factor'],
+                    scaling_l2=params['fedoda']['scaling_factor'],
                     reduce_factor=params['fedoda']['reduce_factor'],
                     increase_factor=params['fedoda']['increase_factor'],
                     threshold=params['fedoda']['threshold'],

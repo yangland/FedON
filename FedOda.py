@@ -15,11 +15,11 @@ from PPO import PPOAgent
 from utils_attack import *
 from attack_bo import bo_attack
 from attack_bi import bi_attack
-from attack_ppo import ppo_attack
+from guided_att_from_action import guided_attack_from_action
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
-                 malicious_client_ids, fl_mali_data_dict, E=5, scaling_factor=8,
+                 malicious_client_ids, fl_mali_data_dict, E=5, scaling_l2=8,
                  reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
                  logger=None):
@@ -48,7 +48,7 @@ class FedOda:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
-        self.attack_mode = "PPO" # 'BO', "BI", "PPO"
+        self.attack_mode = "BO" # 'BO', "BI", "PPO", "ES"
         self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
         self.ppo_episode_memory = []
         self.prev_server_model = None
@@ -57,13 +57,13 @@ class FedOda:
         
         # Create the Bayesian Optimizer
         if self.attack_mode == "BO":
-            l2_bound = (0.0, 1.0)
-            cos_bound = (0.0, 1.0)
+            l2_bound = (-1.0, 1.0)
+            cos_bound = (-1.0, 1.0)
             self.bayes_optimizer = BayesOptimizer(
-                bounds=[l2_bound], # bounds=[l2_bound, cos_bound],
+                bounds=[l2_bound, cos_bound],
                 base_estimator="GP",
                 acq_func="LCB",
-                acq_func_kwargs={"kappa": 1.0},
+                acq_func_kwargs={"kappa": 5.0},
                 random_state=42
             )
             
@@ -77,7 +77,7 @@ class FedOda:
         self.att_direction = None
         self.last_update_norm = 0
         self.benign_direction = None
-        self.scaling_factor = scaling_factor
+        self.scaling_l2 = scaling_l2
         self.epsilon = None
         self.server_model = None
         self.previous_server_model = None
@@ -441,29 +441,31 @@ class FedOda:
         return min(r1, 1.0)  # cap to 1.0
 
 
-    def compute_attack_influence_r2(self, prev_acc, curr_acc, target_acc=0.1, tolerance=0.03,
-                                max_penalty=20.0, scale=50.0):
-        if prev_acc is None:
-            return 0.0
+    # def compute_attack_influence_r2(self, prev_acc, curr_acc, target_acc=0.1, tolerance=0.03,
+    #                             max_penalty=20.0, scale=50.0):
+    #     if prev_acc is None:
+    #         return 0.0
             
-        delta = prev_acc - curr_acc
+    #     delta = prev_acc - curr_acc
         
-        # Case 1: Accuracy above target + tolerance → aggressive attack
-        if curr_acc > target_acc + tolerance:
-            return delta * scale  # Positive if accuracy dropped
+    #     # Case 1: Accuracy above target + tolerance → aggressive attack
+    #     if curr_acc > target_acc + tolerance:
+    #         return delta * scale  # Positive if accuracy dropped
             
-        # Case 2: Within target range → maintenance
-        elif curr_acc >= target_acc - tolerance:
-            if delta > 0:  # Accuracy dropped
-                return delta * (scale * 0.5)  # Smaller reward for maintenance
-            else:  # Accuracy increased
-                return delta * max_penalty  # Penalize increases
+    #     # Case 2: Within target range → maintenance
+    #     elif curr_acc >= target_acc - tolerance:
+    #         if delta > 0:  # Accuracy dropped
+    #             return delta * (scale * 0.5)  # Smaller reward for maintenance
+    #         else:  # Accuracy increased
+    #             return delta * max_penalty  # Penalize increases
                 
-        # Case 3: Below target → small positive reward
-        else:
-            return 0.1  # Small constant reward for staying below target
+    #     # Case 3: Below target → small positive reward
+    #     else:
+    #         return 0.1  # Small constant reward for staying below target
 
-
+    def compute_attack_influence_r2(self, prev_acc, curr_acc, scale=50.0):
+        return (prev_acc - curr_acc) * scale / 100.0
+    
     def compute_attack_influence_r3(self, scale=10.0, clip=True):
         """
         Compute r3 = (cos_b_dist - cos_m_dist) / (cos_b_dist + cos_m_dist), scaled to [-scale, scale].
@@ -598,7 +600,7 @@ class FedOda:
             model.load_state_dict(original_model_state)
             return torch.zeros_like(benign_update)
 
-        self.logger.warning("[FedOda][Craft] No harmful delta found. Returning best effort.")
+        self.logger.warning("[FedOda][Craft] No harmful delta found. Returning best effort - original server model.")
         model.load_state_dict(original_model_state)
         return best_delta
 
@@ -1313,7 +1315,7 @@ class FedOda:
         self.full_history["benign_norm"].append(benign_norm)
         self.full_history["server_update_norm"].append(server_update_norm)
         self.full_history["posterior"].append(posterior)
-        self.full_history["scaling_factor"].append(self.scaling_factor)
+        self.full_history["scaling_factor"].append(self.scaling_l2)
         self.full_history["epsilon"].append(self.epsilon)
         self.full_history["norm_scaling_l2"].append(norm_scaling_l2)
         self.full_history["norm_scaling_cos"].append(norm_scaling_cos)
@@ -1390,30 +1392,34 @@ class FedOda:
                 )
         else:
             server_update_norm = 0.0
-       
-        # # Get the server model valid accuracy (Acc_m)
-        # acc_curr = self.validate(self.server_model, self.pooled_balanced_loader)
-        # self.val_acc_pooled_history.append(acc_curr)
+        
+        round_number = len(self.val_acc_pooled_history)
+        print(round_number, self.val_acc_pooled_history)
+        acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
+        acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
+        malicious_participation_rate = self.current_s_m / self.malicious_clients_num      
 
         if self.attack_mode == "BO":
-            malicious_update_dict, malicious_update = bo_attack(
-                self, mali_direction, benign_update,
-                avg_cos_distance, avg_l2_norm, avg_l2_norm,
-                self.val_acc_pooled_history
+            malicious_update_dict, malicious_update, reward_vector, action = bo_attack(
+                fedoda=self,
+                mali_direction=mali_direction,
+                benign_update=benign_update,
+                avg_cos_distance=avg_cos_distance,
+                avg_l2_distance=avg_l2_distance,
+                avg_update_norm=avg_l2_norm,
+                prev_acc=acc_prev,
+                curr_acc=acc_curr
             )
+            r1, r2, r3 = reward_vector.tolist()
+            reward_scalar = r2
         elif self.attack_mode == "BI":  # Default BI mode
-            self.epsilon = self.scaling_factor * avg_l2_norm
+            self.epsilon = self.scaling_l2 * avg_l2_norm
             malicious_update_dict, malicious_update = bi_attack(
                 self, mali_direction, benign_update,
                 avg_cos_distance, avg_l2_norm
             )
         elif self.attack_mode == "PPO":
             # === Step 0: Measure current state
-            round_number = len(self.val_acc_pooled_history)
-            acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
-            acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
-            malicious_participation_rate = self.current_s_m / self.malicious_clients_num
-
             curr_state = torch.tensor([
                 acc_prev,
                 avg_cos_distance / 2.0,
@@ -1431,7 +1437,7 @@ class FedOda:
             self.ppo_prev_log_prob = log_prob
 
             # === Step 2: Perform attack using selected action → get reward from here
-            malicious_update_dict, malicious_update, reward_vector = ppo_attack(
+            malicious_update_dict, malicious_update, reward_vector = guided_attack_from_action(
                 fedoda=self,
                 round_number=round_number,
                 prev_acc=acc_prev,
@@ -1444,7 +1450,7 @@ class FedOda:
                 mali_direction=mali_direction,
                 benign_update=benign_update,
                 action=action,
-                state=curr_state,
+                log_prefix="[PPO]"
             )
             
             # ✅ Always unpack reward_vector
@@ -1473,7 +1479,45 @@ class FedOda:
                 self.logger.info(f"[FedOda][PPO] Training PPO agent at round {round_number}")
                 self.ppo_agent.train(memory=self.ppo_agent.buffer, round_number=round_number)
                 self.ppo_agent.buffer.clear()
+        elif self.attack_mode == "ES":
+            round_number = len(self.val_acc_pooled_history)
+            acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
+            acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
 
+            # === Step 0: Initialize ES agent if not yet
+            if not hasattr(self, "es_agent"):
+                from es_agent import ESAgent
+                self.es_agent = ESAgent(
+                    init_action=np.array([0.0, -1.0]),
+                    sigma=0.1,
+                    alpha=0.05,
+                    bounds=[(-1.0, 1.0), (-1.0, 1.0)]  # per-dimension bounds
+                )
+                self.logger.info("[FedOda][ES] Initialized Evolution Strategy Agent.")
+
+            # === Step 1: Sample ONE action
+            action = self.es_agent.sample_action()
+
+            # === Step 2: Run attack
+            malicious_update_dict, malicious_update, reward_vector = guided_attack_from_action(
+                fedoda=self,
+                round_number=round_number,
+                prev_acc=acc_prev,
+                curr_acc=acc_curr,
+                avg_cos_distance=avg_cos_distance,
+                avg_l2_distance=avg_l2_distance,
+                avg_update_norm=avg_l2_norm,
+                avg_full_model_cos=avg_full_model_cos,
+                malicious_participation_rate=self.current_s_m / self.malicious_clients_num,
+                mali_direction=mali_direction,
+                benign_update=benign_update,
+                action=torch.tensor(action, dtype=torch.float32),
+                log_prefix="[ES]"
+            )
+
+            # ✅ Always unpack reward_vector
+            r1, r2, r3 = reward_vector.tolist()
+            reward_scalar = float(r1 + r2 + r3)
 
         # Shared logging
         self.log_attack_statistics(

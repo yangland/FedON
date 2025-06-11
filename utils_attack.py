@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import math
 from typing import List, Optional
 from skopt import Optimizer
+import numpy as np
+import random
 
 def flatten_model(state_dict):
     return torch.cat([p.view(-1).float() for p in state_dict.values() if isinstance(p, torch.Tensor)])
@@ -84,20 +86,31 @@ def compute_attack_influence_r3(fedoda):
 
 
 class BayesOptimizer:
-    def __init__(self, bounds, base_estimator="GP", acq_func="EI", random_state=None):
+    def __init__(self, bounds, base_estimator="GP", acq_func="EI", acq_func_kwargs=None, random_state=None):
         self.optimizer = Optimizer(
             dimensions=bounds,
             base_estimator=base_estimator,
             acq_func=acq_func,
+            acq_func_kwargs=acq_func_kwargs,
             random_state=random_state
         )
         self.xs = []
         self.ys = []
+        self.best_x = None
+        self.best_y = -float("inf")
+
 
     def suggest_next_point(self):
-        x_next = self.optimizer.ask()
+        if self.best_x is not None and random.random() < 0.2:
+            # 20% of the time, exploit best action with small noise
+            x_best = self.best_x
+            noise = np.random.normal(scale=0.05, size=len(x_best))
+            x_next = (np.array(x_best) + noise).clip(-1.0, 1.0).tolist()
+        else:
+            x_next = self.optimizer.ask()
         self.xs.append(x_next)
         return x_next
+
 
     def observe(self, x, reward):
         # Optional: overwrite the last point if it was just suggested
@@ -109,3 +122,7 @@ class BayesOptimizer:
             self.xs.append(x)
             self.ys.append(reward)
             self.optimizer.tell(x, reward)
+        
+        if reward > self.best_y:
+            self.best_y = reward
+            self.best_x = x
