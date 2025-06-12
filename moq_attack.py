@@ -1,5 +1,5 @@
 # moq_attack.py
-from utils_attack import linear_map_from_tanh, log2_map_from_tanh
+from utils_attack import linear_map_from_tanh, log2_map_from_tanh, log_interp_scaling_cos
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -26,15 +26,26 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     # === Step 3: Map normalized action to real values
     scaling_l2 = linear_map_from_tanh(norm_scaling_l2, 0.5, 20.0)
 
-    cos_dist_low_bound = 1e-4
+    
     cos_dist_mali_benign = 1 - F.cosine_similarity(
         mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
     ).item()
     cos_dist_mali_benign = max(0.0, min(2.0, cos_dist_mali_benign))
-    raw_high_bound = cos_dist_mali_benign - avg_cos_distance
+    # raw_high_bound = min(avg_cos_distance, cos_dist_mali_benign - avg_cos_distance)
+    raw_high_bound = avg_cos_distance
+    cos_dist_low_bound = 1e-8
     cos_dist_high_bound = max(cos_dist_low_bound, min(2.0, raw_high_bound))
 
-    scaling_cos = log2_map_from_tanh(norm_scaling_cos, cos_dist_low_bound, cos_dist_high_bound)
+    # cos_factor = linear_map_from_tanh(norm_scaling_cos, min_val=1e-8, max_val=1.0)
+    # scaling_cos = cos_dist_mali_benign - cos_factor * (cos_dist_mali_benign - avg_cos_distance)
+    # scaling_cos = log_interp_scaling_cos(norm_scaling_cos, min_val=avg_cos_distance, max_val=cos_dist_mali_benign)
+    fedoda.logger.info(f"[MOQ Attack] cos_dist_high_bound: {cos_dist_high_bound:.4f}")
+
+    scaling_cos = log2_map_from_tanh(
+        norm_scaling_cos,
+        min_val=cos_dist_low_bound,
+        max_val=cos_dist_high_bound
+    )
 
     fedoda.scaling_l2 = scaling_l2
     fedoda.scaling_cos = scaling_cos

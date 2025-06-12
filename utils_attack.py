@@ -39,6 +39,20 @@ def log2_map_from_tanh(norm_value, min_val, max_val):
     log_val = log_min + norm_01 * (log_max - log_min)
     return 2 ** log_val
 
+def log_interp_scaling_cos(norm_value, min_val, max_val):
+    """
+    Logarithmic interpolation between max_val (cos_dist_mali_benign)
+    and min_val (avg_cos_distance), based on norm_value ∈ [-1, 1].
+
+    Returns scaling_cos ∈ [max_val, min_val], log-spaced.
+    """
+    norm_01 = (norm_value + 1.0) / 2.0  # Map [-1, 1] → [0, 1]
+    log_min = np.log2(min_val)
+    log_max = np.log2(max_val)
+    log_val = log_max - norm_01 * (log_max - log_min)  # Reverse direction
+    return 2 ** log_val
+
+
 def linear_map_from_tanh(norm_value, min_val, max_val):
     """Linearly map [-1, 1] to [min_val, max_val]."""
     return min_val + (norm_value + 1.0) / 2.0 * (max_val - min_val)

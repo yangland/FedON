@@ -80,7 +80,8 @@ class FedOda:
                 epsilon_decay=0.99,
                 epsilon_grow=1.1,
                 device=self.device,
-                action_grid_size=9  # 9x9 grid for actions
+                action_grid_size=9,  # 9x9 grid for actions
+                logger=logger
             )
             self.prev_state = None
             self.prev_action = None

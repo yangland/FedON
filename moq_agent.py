@@ -23,7 +23,7 @@ class MOQNetwork(nn.Module):
 
 class MOQAgent:
     def __init__(self, state_dim, action_dim, reward_dim, lr=1e-3, gamma=0.99, epsilon=0.2,
-                 epsilon_min=0.1, epsilon_decay=0.99, epsilon_grow=1.1, device='cpu', action_grid_size=9):
+                 epsilon_min=0.1, epsilon_decay=0.99, epsilon_grow=1.1, device='cpu', action_grid_size=9, logger=None):
         self.device = device
         self.q_net = MOQNetwork(state_dim, action_dim, reward_dim).to(device)
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
@@ -35,6 +35,7 @@ class MOQAgent:
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.reward_dim = reward_dim
+        self.logger = logger
         
         # Set centralized action space
         self.action_space = [
@@ -49,7 +50,7 @@ class MOQAgent:
     def select_action(self, state_tensor, preference_vector):
         if random.random() < self.epsilon:
             action = random.choice(self.action_space)
-            print(f"[MOQAgent] Selecting random action: {action} with epsilon: {self.epsilon:.4f}")
+            self.logger.info(f"[MOQAgent] Selecting random action: {[float(x) for x in action]} with epsilon: {self.epsilon:.4f}")
         else:
             state_rep = state_tensor.repeat(len(self.action_space), 1)
             action_tensor = torch.tensor(self.action_space, dtype=torch.float32).to(self.device)
@@ -88,7 +89,7 @@ class MOQAgent:
         self.optimizer.step()
 
         # Optional: Logging for debugging
-        print(f"[MOQAgent] Loss: {loss.item():.4f}, Q_pred_scalar: {q_pred_scalar.item():.4f}, "
+        self.logger.info(f"[MOQAgent] Loss: {loss.item():.4f}, Q_pred_scalar: {q_pred_scalar.item():.4f}, "
               f"Target: {target.item():.4f}, Epsilon: {self.epsilon:.4f}")
 
 
