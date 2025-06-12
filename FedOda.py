@@ -70,12 +70,17 @@ class FedOda:
             )
 
         if self.attack_mode == "MOQ":
-            self.moq_preference_vector = torch.tensor([0.5, 0.5], dtype=torch.float32)  # Adjust as needed
+            self.moq_preference_vector = torch.tensor([0.6, 0.4], dtype=torch.float32)  # Adjust as needed
             self.moq_agent = MOQAgent(
                 state_dim=4,          # curr_acc, acc_delta, round_norm, model_norm
                 action_dim=2,         # norm_scaling_l2, norm_scaling_cos
                 reward_dim=2,
-                device=self.device
+                epsilon=0.5,  # Exploration factor
+                epsilon_min=0.1,
+                epsilon_decay=0.99,
+                epsilon_grow=1.1,
+                device=self.device,
+                action_grid_size=9  # 9x9 grid for actions
             )
             self.prev_state = None
             self.prev_action = None
@@ -536,7 +541,7 @@ class FedOda:
         epsilon,
         harm_threshold=0.0,
         retry_limit=5,
-        epsilon_growth=1.10,
+        epsilon_growth=1,
         cos_growth=0.9,
     ):
         """
@@ -1455,16 +1460,24 @@ class FedOda:
 
             # === Step 5: Compute reward from previous round
             if self.prev_acc is not None:
-                r1 = -acc_curr
-                r2 = self.prev_acc - acc_curr
+                r1 = 1.0 - acc_curr
+                r2 = (self.prev_acc - acc_curr) * 5
                 r3 = 0
                 reward_vector = [r1, r2]
+                
+                self.logger.info(f"[FedOda] Reward r1: {r1:.4f}, r2: {r2:.4f} (prev_acc={self.prev_acc:.4f}, acc_curr={acc_curr:.4f})")
+                old_eps, new_eps = self.moq_agent.adjust_epsilon(r1)
+                self.logger.info(f"[FedOda] Adjusted epsilon: {old_eps:.4f} → {new_eps:.4f} (based on r1={r1:.4f})")
+                
+                scalar_reward = np.dot(reward_vector, self.moq_preference_vector.numpy())
+                self.logger.info(f"[FedOda] Scalar reward: {scalar_reward:.4f}")
+                
                 self.moq_agent.update(
                     s=self.prev_state,
                     a=self.prev_action,
                     r=reward_vector,
                     s_next=state,
-                    action_space=[ [x, y] for x in np.linspace(-1, 1, 5) for y in np.linspace(-1, 1, 5) ]
+                    preference_vector= self.moq_preference_vector
                 )
             else:
                 r1 = 0
@@ -1480,19 +1493,22 @@ class FedOda:
 
             round_number = len(self.val_acc_pooled_history)
 
-            if round_number % 10 == 0:
+            if round_number % 5 == 0:
                 with torch.no_grad():
-                    # Convert state to tensor if needed
-                    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.moq_agent.device)
-                    preference = self.moq_agent.preference_vector  # or however you define it
+                    device = self.moq_agent.device
+                    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
+                    preference_vector = self.moq_preference_vector.to(device)
 
-                    q_values = self.moq_agent.q_network(state_tensor, preference)
-                    best_action_idx = torch.argmax(q_values).item()
-                    action_space = [ [x, y] for x in np.linspace(-1, 1, 5) for y in np.linspace(-1, 1, 5) ]
-                    best_action = action_space[best_action_idx]
+                    action_tensor = torch.tensor(self.moq_agent.action_space, dtype=torch.float32).to(device)
+                    state_rep = state_tensor.repeat(len(self.moq_agent.action_space), 1)
 
-                    self.logger.info(f"[FedOda][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}, Q-values = {q_values.cpu().numpy().tolist()}")
+                    q_values_vec = self.moq_agent.q_net(state_rep, action_tensor)  # [N, reward_dim]
+                    scalar_q_values = torch.matmul(q_values_vec, preference_vector)  # [N]
 
+                    best_action_idx = torch.argmax(scalar_q_values).item()
+                    best_action = self.moq_agent.action_space[best_action_idx]
+
+                    self.logger.info(f"[FedOda][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}, Scalar Q-values = {scalar_q_values.cpu().numpy().tolist()}")
 
         elif self.attack_mode == "PPO":
             # === Step 0: Measure current state

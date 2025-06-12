@@ -22,8 +22,8 @@ class MOQNetwork(nn.Module):
 
 
 class MOQAgent:
-    def __init__(self, state_dim, action_dim, reward_dim, lr=1e-3, gamma=0.99, epsilon=1.0,
-                 epsilon_min=0.05, epsilon_decay=0.99, device='cpu'):
+    def __init__(self, state_dim, action_dim, reward_dim, lr=1e-3, gamma=0.99, epsilon=0.2,
+                 epsilon_min=0.1, epsilon_decay=0.99, epsilon_grow=1.1, device='cpu', action_grid_size=9):
         self.device = device
         self.q_net = MOQNetwork(state_dim, action_dim, reward_dim).to(device)
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
@@ -31,47 +31,80 @@ class MOQAgent:
         self.epsilon = epsilon
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
+        self.epsilon_grow = epsilon_grow
         self.state_dim = state_dim
         self.action_dim = action_dim
         self.reward_dim = reward_dim
+        
+        # Set centralized action space
+        self.action_space = [
+            [x, y]
+            for x in np.linspace(-1, 1, action_grid_size)
+            for y in np.linspace(-1, 1, action_grid_size)
+        ]
 
         self.last_state = None
         self.last_action = None
 
-    def select_action(self, state_tensor, preference_vector, action_space):
+    def select_action(self, state_tensor, preference_vector):
         if random.random() < self.epsilon:
-            action = random.choice(action_space)
+            action = random.choice(self.action_space)
+            print(f"[MOQAgent] Selecting random action: {action} with epsilon: {self.epsilon:.4f}")
         else:
-            state_rep = state_tensor.repeat(len(action_space), 1)
-            action_tensor = torch.tensor(action_space, dtype=torch.float32).to(self.device)
-            q_values = self.q_net(state_rep, action_tensor)  # shape [N, reward_dim]
+            state_rep = state_tensor.repeat(len(self.action_space), 1)
+            action_tensor = torch.tensor(self.action_space, dtype=torch.float32).to(self.device)
+            q_values = self.q_net(state_rep, action_tensor)  # [N, reward_dim]
             scores = torch.matmul(q_values, preference_vector.to(self.device))  # [N]
-            action = action_space[torch.argmax(scores).item()]
+            action = self.action_space[torch.argmax(scores).item()]
         return action
 
-    def update(self, s, a, r, s_next, action_space):
+    def update(self, s, a, r, s_next, preference_vector):
         # Convert to tensors
-        s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).to(self.device)
-        a = torch.tensor(a, dtype=torch.float32).unsqueeze(0).to(self.device)
-        r = torch.tensor(r, dtype=torch.float32).to(self.device)
-        s_next = torch.tensor(s_next, dtype=torch.float32).unsqueeze(0).to(self.device)
+        s = torch.tensor(s, dtype=torch.float32).unsqueeze(0).to(self.device)            # [1, state_dim]
+        a = torch.tensor(a, dtype=torch.float32).unsqueeze(0).to(self.device)            # [1, action_dim]
+        r = torch.tensor(r, dtype=torch.float32).to(self.device)                         # [reward_dim]
+        s_next = torch.tensor(s_next, dtype=torch.float32).unsqueeze(0).to(self.device)  # [1, state_dim]
+        preference_vector = preference_vector.to(self.device)                            # [reward_dim]
 
-        # Compute target Q
+        # Compute scalar target Q-value
         with torch.no_grad():
-            next_actions = torch.tensor(action_space, dtype=torch.float32).to(self.device)
-            next_states = s_next.repeat(len(action_space), 1)
-            q_next = self.q_net(next_states, next_actions)  # [N, reward_dim]
-            q_next_max = q_next.max(dim=0).values  # [reward_dim]
+            next_actions = torch.tensor(self.action_space, dtype=torch.float32).to(self.device)       # [N, action_dim]
+            next_states = s_next.repeat(len(self.action_space), 1)                                    # [N, state_dim]
+            q_next = self.q_net(next_states, next_actions)                                       # [N, reward_dim]
+            q_next_scalar = torch.matmul(q_next, preference_vector)                              # [N]
+            q_next_max_scalar = q_next_scalar.max()                                              # scalar
 
-            target = r + self.gamma * q_next_max
+            r_scalar = torch.dot(r, preference_vector)                                           # scalar
+            target = r_scalar + self.gamma * q_next_max_scalar                                   # scalar
 
-        # Current Q
-        q_pred = self.q_net(s, a).squeeze(0)
+        # Compute predicted scalar Q-value
+        q_pred = self.q_net(s, a).squeeze(0)             # [reward_dim]
+        q_pred_scalar = torch.dot(q_pred, preference_vector)  # scalar
 
-        loss = nn.MSELoss()(q_pred, target)
+        # Loss and optimization
+        loss = nn.MSELoss()(q_pred_scalar, target)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
 
-        # Decay epsilon
-        self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+        # Optional: Logging for debugging
+        print(f"[MOQAgent] Loss: {loss.item():.4f}, Q_pred_scalar: {q_pred_scalar.item():.4f}, "
+              f"Target: {target.item():.4f}, Epsilon: {self.epsilon:.4f}")
+
+
+    def adjust_epsilon(self, r1, r1_threshold=0.5):
+        """
+        Adjust epsilon based on r1 (1 - acc_curr).
+        Increase epsilon if r1 is low (i.e., attack is weak).
+        Decrease epsilon if r1 is high (i.e., attack is strong).
+        """
+        old_epsilon = self.epsilon  # Store the current value
+        
+        if r1 < r1_threshold:
+            # Attack is weak ⇒ explore more
+            self.epsilon = min(1.0, self.epsilon * self.epsilon_grow)
+        else:
+            # Attack is strong ⇒ exploit more
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
+        
+        return old_epsilon, self.epsilon

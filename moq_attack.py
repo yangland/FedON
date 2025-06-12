@@ -20,11 +20,7 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     state_tensor = torch.tensor(state, dtype=torch.float32).to(agent.device)
 
     # === Step 2: Sample action (normalized space)
-    # Action ∈ [-1, 1]^2
-    action_space = [ 
-        [x, y] for x in np.linspace(-1, 1, 5) for y in np.linspace(-1, 1, 5)
-    ]
-    action = agent.select_action(state_tensor, preference, action_space)
+    action = agent.select_action(state_tensor, preference)
     norm_scaling_l2, norm_scaling_cos = action
 
     # === Step 3: Map normalized action to real values
@@ -58,7 +54,6 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     malicious_update_dict = vector_to_state_dict(malicious_update, fedoda.server_model)
 
     return malicious_update_dict, malicious_update, [norm_scaling_l2, norm_scaling_cos], state
-
 
 
 def get_model_l2_norm(model):

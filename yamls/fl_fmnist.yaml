@@ -1,4 +1,4 @@
-cuda_device: 2
+cuda_device: 1
 if_series: False
 
 # defense methods
@@ -35,7 +35,7 @@ c_lr: 0.0001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 150
+fl_iter_num: 100
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
