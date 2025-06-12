@@ -1,6 +1,8 @@
 import torch.nn.functional as F
 from utils_attack import vector_to_state_dict, log2_map, linear_map_from_tanh
 import torch
+import numpy as np
+
 
 def bo_attack(
     fedoda,
@@ -24,6 +26,7 @@ def bo_attack(
     cos_dist_dirs = 1 - cos_sim_dirs
 
     # === Step 2: Sample next candidate action from BO
+    update_kappa(fedoda, curr_acc)
     x_next = fedoda.bayes_optimizer.suggest_next_point()
     print(f"[FedOda][BO] Suggested action: {x_next}")
     norm_scaling_l2, norm_scaling_cos = x_next[0], x_next[1]
@@ -59,7 +62,7 @@ def bo_attack(
         scaling_cos_dist=fedoda.scaling_cos,
         epsilon=fedoda.epsilon,
         harm_threshold=0.01,
-        retry_limit=5
+        retry_limit=15
     )
 
     # === Step 5: Compute reward based on accuracy drop
@@ -98,3 +101,11 @@ def bo_attack(
     # === Step 7: Return malicious update
     malicious_update_dict = vector_to_state_dict(malicious_update, fedoda.server_model)
     return malicious_update_dict, malicious_update, reward_vector, torch.tensor(x_next)
+
+
+def update_kappa(fedoda, curr_acc):
+    acc_percent = curr_acc * 100.0
+    kappa = np.interp(acc_percent, [10, 70], [0.5, 5.0])
+    kappa = float(np.clip(kappa, 0.5, 6.0))
+    fedoda.bayes_optimizer.optimizer.acq_func_kwargs["kappa"] = kappa
+    fedoda.logger.info(f"[FedOda][BO] Updated kappa={kappa:.2f} based on curr_acc={curr_acc:.4f}")

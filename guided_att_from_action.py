@@ -81,12 +81,17 @@ def guided_attack_from_action(
     # r1 = fedoda.compute_attack_influence_r1(curr_acc, target_acc=0.2, tolerance=0.05)
     r1 = 0
     # Short term accuracy drop reward
-    r2 = fedoda.compute_attack_influence_r2(prev_acc, 
-                                            curr_acc,    
-                                            target_acc=0.1, 
-                                            tolerance=0.03,
-                                            max_penalty=20.0,
-                                            scale=50.0)
+    # r2 = fedoda.compute_attack_influence_r2(prev_acc, 
+    #                                         curr_acc,    
+    #                                         target_acc=0.1, 
+    #                                         tolerance=0.03,
+    #                                         max_penalty=20.0,
+    #                                         scale=50.0)
+    r2 = fedoda.compute_attack_influence_r2(
+        prev_acc,
+        curr_acc,
+        scale=50.0
+    )
     # r2 = (prev_acc - curr_acc) * 100
     
     fedoda.logger.info(f"[DEBUG][attack_ppo.py] prev_acc={prev_acc:.4f}, curr_acc={curr_acc:.4f}, r2={(prev_acc - curr_acc) * 100:.4f}")

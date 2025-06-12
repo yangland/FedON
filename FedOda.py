@@ -16,6 +16,8 @@ from utils_attack import *
 from attack_bo import bo_attack
 from attack_bi import bi_attack
 from guided_att_from_action import guided_attack_from_action
+from moq_agent import MOQAgent
+from moq_attack import moq_attack
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
@@ -48,7 +50,7 @@ class FedOda:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
-        self.attack_mode = "BO" # 'BO', "BI", "PPO", "ES"
+        self.attack_mode = "MOQ" # 'BO', "BI", "PPO", "ES" "MOQ"
         self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
         self.ppo_episode_memory = []
         self.prev_server_model = None
@@ -66,7 +68,20 @@ class FedOda:
                 acq_func_kwargs={"kappa": 5.0},
                 random_state=42
             )
-            
+
+        if self.attack_mode == "MOQ":
+            self.moq_preference_vector = torch.tensor([0.5, 0.5], dtype=torch.float32)  # Adjust as needed
+            self.moq_agent = MOQAgent(
+                state_dim=4,          # curr_acc, acc_delta, round_norm, model_norm
+                action_dim=2,         # norm_scaling_l2, norm_scaling_cos
+                reward_dim=2,
+                device=self.device
+            )
+            self.prev_state = None
+            self.prev_action = None
+            self.prev_acc = None
+
+    
         # For tracking performance history and reward scores
         self.bo_reward_history = []  # stores rewards (with None if skipped)
         self.bo_param_history = []   # stores chosen params per round
@@ -122,7 +137,7 @@ class FedOda:
         }
 
 
-    def get_attack_direction(self, model, train_loader, max_retries=50, initial_lr=0.001):
+    def get_attack_direction(self, model, train_loader, max_retries=50, initial_lr=0.001, num_epochs=2):
         def contains_nan(tensor_list):
             return any(param is not None and torch.isnan(param).any() for param in tensor_list)
 
@@ -130,7 +145,7 @@ class FedOda:
         model.train()
         loss_fn = lambda outputs, labels: -F.cross_entropy(outputs, labels)
 
-        # Move model state to CPU to reduce GPU memory usage
+        # Save original model state
         original_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
         retry_count = 0
@@ -139,34 +154,37 @@ class FedOda:
 
         while retry_count < max_retries:
             retry_count += 1
-            # Restore model state to GPU
             model.load_state_dict({k: v.to(self.device) for k, v in original_state.items()})
             nan_detected = False
 
-            for inputs, labels in train_loader:
-                inputs, labels = inputs.to(self.device), labels.to(self.device)
+            for epoch in range(num_epochs):  # ✅ Run for multiple epochs
+                for inputs, labels in train_loader:
+                    inputs, labels = inputs.to(self.device), labels.to(self.device)
 
-                optimizer.zero_grad()
-                outputs = model(inputs)
-                loss = loss_fn(outputs, labels)
-                loss.backward()
+                    optimizer.zero_grad()
+                    outputs = model(inputs)
+                    loss = loss_fn(outputs, labels)
+                    loss.backward()
 
-                if contains_nan([p.grad for p in model.parameters()]):
-                    nan_detected = True
-                    break
+                    if contains_nan([p.grad for p in model.parameters()]):
+                        nan_detected = True
+                        break
 
-                optimizer.step()
+                    optimizer.step()
 
-                if contains_nan([p.data for p in model.parameters()]):
-                    nan_detected = True
-                    break
+                    if contains_nan([p.data for p in model.parameters()]):
+                        nan_detected = True
+                        break
+
+                if nan_detected:
+                    break  # Exit epoch loop if NaN detected
 
             if nan_detected:
                 current_lr *= 0.1
                 optimizer = optim.SGD(model.parameters(), lr=current_lr)
                 print(f"[Retry {retry_count}] NaN detected. Reducing lr to {current_lr} and restarting.")
             else:
-                break
+                break  # ✅ Only break if all epochs completed without NaN
 
         if retry_count == max_retries:
             print("Maximum retries reached. Proceeding with last attempted state.")
@@ -188,13 +206,14 @@ class FedOda:
         g_m_unit = g_m_vec / (g_m_vec.norm() + 1e-10)
         self.att_direction = g_m_unit
 
-        # Restore original model state to GPU
+        # Restore original model state
         model.load_state_dict({k: v.to(self.device) for k, v in original_state.items()})
 
         grads = {k: v.to(self.device) for k, v in grads.items()}
         g_m_unit = g_m_unit.to(self.device)
-        
+
         return grads, g_m_unit
+
 
 
     def compute_predicted_benign_update(self, model_t, model_t_minus_1, train_loader):
@@ -515,10 +534,10 @@ class FedOda:
         target_direction,
         scaling_cos_dist,
         epsilon,
-        harm_threshold=0.01,
+        harm_threshold=0.0,
         retry_limit=5,
         epsilon_growth=1.10,
-        cos_growth=1.10,
+        cos_growth=0.9,
     ):
         """
         Craft a malicious update Δₘ such that:
@@ -575,7 +594,7 @@ class FedOda:
             )
 
             # === Check if this attempt is harmful enough
-            if acc_drop >= harm_threshold:
+            if acc_drop >= 0:
                 self.logger.info(f"[FedOda][Craft] Successful attack at attempt {attempt + 1}")
                 model.load_state_dict(original_model_state)
                 return delta.detach()
@@ -1368,7 +1387,10 @@ class FedOda:
     def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs):
         # Step1. perform analysis
         self.logger.info("[FedOda] Step 1: Computing best attack direction (g_m)")
-        g_m_dict, g_m = self.get_attack_direction(self.server_model, self.pooled_loader)
+        g_m_dict, g_m = self.get_attack_direction(model=self.server_model,
+                                                  train_loader=self.pooled_loader,
+                                                  initial_lr=0.001,
+                                                  num_epochs=2)
 
         self.logger.info("[FedOda] Step 2: Predicting benign update direction with pooled data")
         benign_direction, simulated_norm = self.simulate_benign_direction(
@@ -1418,6 +1440,60 @@ class FedOda:
                 self, mali_direction, benign_update,
                 avg_cos_distance, avg_l2_norm
             )
+        elif self.attack_mode == "MOQ":
+            malicious_update_dict, malicious_update, action, state = moq_attack(
+                fedoda=self,
+                mali_direction=mali_direction,
+                benign_update=benign_update,
+                avg_cos_distance=avg_cos_distance,
+                avg_l2_distance=avg_l2_distance,
+                avg_update_norm=avg_l2_norm,
+                prev_acc=acc_prev,
+                curr_acc=acc_curr
+            )
+            self.logger.info(f"[FedOda] MOQ action: {[float(x) for x in action]}, state: {state}")
+
+            # === Step 5: Compute reward from previous round
+            if self.prev_acc is not None:
+                r1 = -acc_curr
+                r2 = self.prev_acc - acc_curr
+                r3 = 0
+                reward_vector = [r1, r2]
+                self.moq_agent.update(
+                    s=self.prev_state,
+                    a=self.prev_action,
+                    r=reward_vector,
+                    s_next=state,
+                    action_space=[ [x, y] for x in np.linspace(-1, 1, 5) for y in np.linspace(-1, 1, 5) ]
+                )
+            else:
+                r1 = 0
+                r2 = 0
+                r3 = 0
+                reward_vector = [r1, r2]
+            reward_scalar = r1 + r2 
+
+            # === Step 6: Save for next round
+            self.prev_state = state
+            self.prev_action = action
+            self.prev_acc = acc_curr
+
+            round_number = len(self.val_acc_pooled_history)
+
+            if round_number % 10 == 0:
+                with torch.no_grad():
+                    # Convert state to tensor if needed
+                    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.moq_agent.device)
+                    preference = self.moq_agent.preference_vector  # or however you define it
+
+                    q_values = self.moq_agent.q_network(state_tensor, preference)
+                    best_action_idx = torch.argmax(q_values).item()
+                    action_space = [ [x, y] for x in np.linspace(-1, 1, 5) for y in np.linspace(-1, 1, 5) ]
+                    best_action = action_space[best_action_idx]
+
+                    self.logger.info(f"[FedOda][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}, Q-values = {q_values.cpu().numpy().tolist()}")
+
+
         elif self.attack_mode == "PPO":
             # === Step 0: Measure current state
             curr_state = torch.tensor([
