@@ -22,8 +22,8 @@ class MOQNetwork(nn.Module):
 
 
 class MOQAgent:
-    def __init__(self, state_dim, action_dim, reward_dim, lr=1e-3, gamma=0.99, epsilon=0.2,
-                 epsilon_min=0.1, epsilon_decay=0.99, epsilon_grow=1.1, device='cpu', action_grid_size=9, logger=None):
+    def __init__(self, state_dim, action_dim, reward_dim, lr=1e-3, gamma=0.99, epsilon=1.0,
+                 epsilon_min=0.1, epsilon_decay=0.99, epsilon_grow=1.01, device='cpu', action_grid_size=9, logger=None):
         self.device = device
         self.q_net = MOQNetwork(state_dim, action_dim, reward_dim).to(device)
         self.optimizer = optim.Adam(self.q_net.parameters(), lr=lr)
@@ -93,19 +93,32 @@ class MOQAgent:
               f"Target: {target.item():.4f}, Epsilon: {self.epsilon:.4f}")
 
 
-    def adjust_epsilon(self, r1, r1_threshold=0.5):
+    def adjust_epsilon(self, r1, r2, r1_threshold=0.5, r2_threshold=0.01, epsilon_cap=0.5):
         """
-        Adjust epsilon based on r1 (1 - acc_curr).
-        Increase epsilon if r1 is low (i.e., attack is weak).
-        Decrease epsilon if r1 is high (i.e., attack is strong).
+        Adjust epsilon based on r1 and r2:
+        - r1 = 1 - acc_curr (how bad the current performance is)
+        - r2 = (prev_acc - acc_curr) * 5 (how much worse the model got)
+
+        Logic:
+        - If performance is good and improving ⇒ exploit more (lower epsilon)
+        - If performance is bad and getting worse ⇒ explore more (higher epsilon)
         """
-        old_epsilon = self.epsilon  # Store the current value
-        
-        if r1 < r1_threshold:
-            # Attack is weak ⇒ explore more
-            self.epsilon = min(1.0, self.epsilon * self.epsilon_grow)
+
+        old_epsilon = self.epsilon
+
+        # Case 1: Good performance and improving → exploit more
+        if r1 < r1_threshold and r2 < r2_threshold:
+            self.epsilon *= self.epsilon_decay
+            self.epsilon = max(self.epsilon_min, self.epsilon)
+
+        # Case 2: Bad performance and worsening → explore more
+        elif r1 > r1_threshold and r2 > r2_threshold:
+            self.epsilon *= self.epsilon_grow
+            self.epsilon = min(epsilon_cap, self.epsilon)
+
+        # Case 3: Mixed signals → do nothing or mild decay
         else:
-            # Attack is strong ⇒ exploit more
-            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
-        
+            self.epsilon *= 0.99  # mild decay to encourage gradual exploitation
+            self.epsilon = max(self.epsilon_min, self.epsilon)
+
         return old_epsilon, self.epsilon

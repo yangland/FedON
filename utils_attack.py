@@ -33,11 +33,16 @@ def log2_map(norm_value: float, min_val: float, max_val: float) -> float:
 
 
 def log2_map_from_tanh(norm_value, min_val, max_val):
-    norm_01 = (norm_value + 1.0) / 2.0
-    log_min = math.log2(min_val)
-    log_max = math.log2(max_val)
-    log_val = log_min + norm_01 * (log_max - log_min)
-    return 2 ** log_val
+    norm_01 = (norm_value + 1.0) / 2.0  # Map [-1,1] to [0,1]
+    
+    if min_val == 0:
+        # Linear mapping when min_val is 0 to avoid log(0)
+        return norm_01 * max_val
+    else:
+        log_min = math.log2(min_val)
+        log_max = math.log2(max_val)
+        log_val = log_min + norm_01 * (log_max - log_min)
+        return 2 ** log_val
 
 def log_interp_scaling_cos(norm_value, min_val, max_val):
     """

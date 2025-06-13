@@ -11,12 +11,16 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     preference = fedoda.moq_preference_vector
 
     # === Step 1: Build state vector
-    round_number = len(fedoda.val_acc_pooled_history)
-    round_norm = round_number / 200.0
+    # round_number = len(fedoda.val_acc_pooled_history)
     acc_delta = curr_acc - prev_acc
-    model_norm = get_model_l2_norm(fedoda.server_model)
+    if fedoda.prev_server_model is None:
+        model_norm_delta = 0
+    else:
+        prev_model_norm = get_model_l2_norm(fedoda.prev_server_model)
+        curr_model_norm = get_model_l2_norm(fedoda.server_model)
+        model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm)/prev_model_norm))
 
-    state = [curr_acc, acc_delta, round_norm, model_norm]
+    state = [curr_acc, acc_delta, model_norm_delta]
     state_tensor = torch.tensor(state, dtype=torch.float32).to(agent.device)
 
     # === Step 2: Sample action (normalized space)
@@ -26,19 +30,17 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     # === Step 3: Map normalized action to real values
     scaling_l2 = linear_map_from_tanh(norm_scaling_l2, 0.5, 20.0)
 
-    
     cos_dist_mali_benign = 1 - F.cosine_similarity(
-        mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
-    ).item()
+            mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1).item()
     cos_dist_mali_benign = max(0.0, min(2.0, cos_dist_mali_benign))
-    # raw_high_bound = min(avg_cos_distance, cos_dist_mali_benign - avg_cos_distance)
-    raw_high_bound = avg_cos_distance
-    cos_dist_low_bound = 1e-8
+    cos_dist_mali_max =  cos_dist_mali_benign - avg_cos_distance
+    scaling_cos_ = cos_dist_mali_max/avg_cos_distance
+    fedoda.logger.info(f"Cos Attack Space: {scaling_cos_:1f} X times of avg_cos_distance")
+    
+    raw_high_bound = avg_cos_distance * scaling_cos_
+    cos_dist_low_bound = 0
     cos_dist_high_bound = max(cos_dist_low_bound, min(2.0, raw_high_bound))
 
-    # cos_factor = linear_map_from_tanh(norm_scaling_cos, min_val=1e-8, max_val=1.0)
-    # scaling_cos = cos_dist_mali_benign - cos_factor * (cos_dist_mali_benign - avg_cos_distance)
-    # scaling_cos = log_interp_scaling_cos(norm_scaling_cos, min_val=avg_cos_distance, max_val=cos_dist_mali_benign)
     fedoda.logger.info(f"[MOQ Attack] cos_dist_high_bound: {cos_dist_high_bound:.4f}")
 
     scaling_cos = log2_map_from_tanh(
@@ -58,7 +60,9 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
         scaling_cos_dist=fedoda.scaling_cos,
         epsilon=fedoda.epsilon,
         harm_threshold=0.0,
-        retry_limit=15
+        retry_limit=10,
+        epsilon_growth=1,
+        cos_growth=0.75,
     )
     
     # === Step 7: Return malicious update
