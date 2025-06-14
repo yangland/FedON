@@ -12,6 +12,7 @@ channel_dict =  {
     "mnist": 1,
     "fmnist": 1,
     "femnist": 1,
+    "svhn": 3
 }
 
 ''' ConvNet '''
