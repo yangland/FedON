@@ -7,7 +7,7 @@ channel_dict =  {
     "cifar10": 3,
     "cinic10": 3,
     "cifar100": 3,
-    "Imagenette": 3,
+    "imagenette": 3,
     "SVHN": 3,
     "mnist": 1,
     "fmnist": 1,
@@ -90,6 +90,84 @@ class ResNet18(nn.Module):
         out = self.layer4(out)
         out = F.avg_pool2d(out, 4)
         out = out.view(out.size(0), -1)
+        return out
+    
+    
+class ResNet20(nn.Module):
+    def __init__(self, num_classes=100, norm_layer=None, dataset='cifar100'):
+        super(ResNet20, self).__init__()
+        if norm_layer is None:
+            self.norm_layer = nn.BatchNorm2d
+        else:
+            self.norm_layer = norm_layer
+            
+        channel = channel_dict.get(dataset, 3)
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(channel, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = self.norm_layer(16)
+        self.layer1 = self._make_layer(16, 3, stride=1)
+        self.layer2 = self._make_layer(32, 3, stride=2)
+        self.layer3 = self._make_layer(64, 3, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(64, num_classes)
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s, self.norm_layer))
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+class ResNet14_Light(nn.Module):
+    def __init__(self, num_classes=100, norm_layer=None, dataset='cifar100'):
+        super(ResNet14_Light, self).__init__()
+        if norm_layer is None:
+            self.norm_layer = nn.BatchNorm2d
+        else:
+            self.norm_layer = norm_layer
+            
+        channel = channel_dict.get(dataset, 3)
+        self.in_planes = 32  # Start smaller
+
+        self.conv1 = nn.Conv2d(channel, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = self.norm_layer(32)
+        self.layer1 = self._make_layer(32, 2, stride=1)
+        self.layer2 = self._make_layer(64, 2, stride=2)
+        self.layer3 = self._make_layer(128, 2, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(128, num_classes)
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1]*(num_blocks-1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s, self.norm_layer))
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
         return out
     
     
