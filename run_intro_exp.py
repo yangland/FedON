@@ -49,7 +49,7 @@ class Config:
         self.model_name = "ResNet18" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "ConvNet",
         self.num_classes = 10
         self.mali_client_num = 10
-        self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "Imagenette"
+        self.dataset = "cifar10"    # "mnist", "fmnist", "cifar10", "SVHN", "imagenette"
         self.device = "cuda:3" if torch.cuda.is_available() else "cpu"
         self.client_num = 100
         self.noniid_type = "dirichlet"
@@ -480,7 +480,7 @@ def get_dataset(dataset_name):
     elif dataset_name == "SVHN":
         train_data = datasets.SVHN(root='./data', split='train', download=True, transform=transform_img)
         test_data = datasets.SVHN(root='./data', split='test', download=True, transform=transform_img)
-    elif dataset_name == "Imagenette":
+    elif dataset_name == "imagenette":
         train_data = datasets.Imagenette(root='./data', split='train', size="320px", download=False, transform=transform_img2)
         test_data = datasets.Imagenette(root='./data', split='val', size="320px", download=False, transform=transform_img2)
     return train_data, test_data

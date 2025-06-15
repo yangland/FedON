@@ -1,4 +1,4 @@
-cuda_device: 1
+cuda_device: 3
 if_series: True
 
 # defense methods
@@ -31,7 +31,7 @@ attack_magnitude: 1
 
 image_size: [3, 32, 32]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.01
+c_lr: 0.001
 c_momentum: 0.9
 client_batch_size: 64
 

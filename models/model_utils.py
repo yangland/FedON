@@ -1,7 +1,7 @@
 from models.mnist_6l import Mnist_6L
 from models.convnet import ConvNet
 from models.cifar10_18l import Cifar10_18L 
-from models.resnet import ResNet18
+from models.resnet import ResNet18, ResNet14_Light, ResNet20
 from models.vgg import VGG13, VGG16, VGG11, VGG13_32
 from models.efficientnet import EfficientNetB0
 import torchvision.models as models
@@ -30,6 +30,8 @@ def get_model(model_name):
         "SimpleCNN_28": SimpleCNN_28,
         "SimpleCNN_32": SimpleCNN_32, # works for cifar10
         "MobileNetV2_28": MobileNetV2_28, # works for fmnist
+        "ResNet20": ResNet20, # for cifar100
+        "ResNet14_Light": ResNet14_Light # for cifar100 works
     }
 
     if model_name not in model_dict:

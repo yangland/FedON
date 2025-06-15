@@ -32,7 +32,7 @@ attack_method: 'none'
 
 image_size: [3, 224, 224]
 c_epochs: 2 # 2, 5, 10
-c_lr: 0.01
+c_lr: 0.001
 c_momentum: 0.9
 client_batch_size: 64
 
