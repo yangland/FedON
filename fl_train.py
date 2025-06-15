@@ -348,17 +348,30 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                                         root_ds, mco_dict, 
                                                         batch_size=5, device=device)
                 
+                
+                if has_non_finite_tensor(server_c_grad, name="server_c_grad"):
+                    logger.warning(f"[DEBUG] Iter {iter} - Non-finite values in server_c_grad")
+
                 # caculate trust score
                 FLTrustTotalScore = 1e-9
                 trust_score_list = []
                 clip_value_list = []
                 
                 for client_id in client_selection:
-                    client_trust_score, client_clipped_value = cosScoreAndClipValue(server_c_grad, c_grad_dict[client_id])
-                    FLTrustTotalScore += client_trust_score
+                    client_grad = c_grad_dict[client_id]
+                    if has_non_finite_tensor(client_grad, name=f"client {client_id}"):
+                        logger.warning(f"[DEBUG] Iter {iter} - Skipping client {client_id} due to non-finite gradients")
+                        continue
+                    client_trust_score, client_clipped_value = cosScoreAndClipValue(server_c_grad, client_grad)
+                    if not torch.isfinite(torch.tensor(client_trust_score)):
+                        logger.warning(f"[WARNING] Iter {iter} - Non-finite trust score for client {client_id}")
+                    if not torch.isfinite(client_clipped_value).all():
+                        logger.warning(f"[WARNING] Iter {iter} - Non-finite clipped value for client {client_id}")
+
                     trust_score_list.append(client_trust_score)
                     clip_value_list.append(client_clipped_value)
-                
+                    FLTrustTotalScore += client_trust_score
+
                 trust_score_list = [x / FLTrustTotalScore  for x in trust_score_list]
                 # weighted average of grad
                 fltrust_weights_list = [a*b for a,b in zip(trust_score_list, clip_value_list)]
@@ -366,14 +379,22 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 c_weights_csv.append_save_csv(
                         [iter] + [v.item() for k, v in sorted(fltrust_weights.items())]
                     )
+                float_weights = {k: v.item() for k, v in fltrust_weights.items()}
+                logger.info(f"fltrust_weights: {float_weights}")
                 c_grad = grad_weighted_sum(c_grad_dict, fltrust_weights)
-                       
+            
+            # check nan
+            if has_nan_grad(c_grad):
+                logger.error(f"[ERROR] Iter {iter} - NaN in c_grad. Skipping update.")
+                continue  # Or break, or save and exit
+
+            
             # Update the models in mco_dict directly
             grad_add_to_model(mco_dict[-1]["c_model"], 
                               aggr_c_lr, 
                               c_grad,
-                              update_bn_buffers=True, 
-                              update_batched_tracked=True)         
+                              update_bn_buffers=False, 
+                              update_batched_tracked=False)  # false and false for ResNet       
         
         # for targeted attack test on one of the malicious client
         # validation on server's C model
@@ -690,3 +711,19 @@ def sanitize_attack_metrics(metrics_dict):
                     new_values.append(None)  # fallback
         sanitized[key] = new_values
     return sanitized
+
+
+def has_non_finite_tensor(tensor_dict, name=''):
+    for k, v in tensor_dict.items():
+        if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
+            logger.warning(f"[WARNING] Non-finite value detected in {name} param '{k}': min={v.min().item()}, max={v.max().item()}")
+            return True
+    return False
+
+
+def has_nan_grad(grad_dict):
+    for k, v in grad_dict.items():
+        if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
+            print(f"[DEBUG] Non-finite in grad key: {k}")
+            return True
+    return False

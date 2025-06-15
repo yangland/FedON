@@ -329,18 +329,18 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
     # fl_train = list(fl_train)
     for idx, (_, label) in enumerate(fl_train):
         label_indices[label].append(idx)
-    print("label_indices", label_indices)
+    # print("label_indices", label_indices)
     # Dicts to store client data
     fl_data_dict = defaultdict(list)
     labels_per_client_dict = {x: list(range(fl_class_num)) for x in range(client_num)}
     label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}
-    print("labels_per_client_dict", labels_per_client_dict)
+    # print("labels_per_client_dict", labels_per_client_dict)
     
     total_samples_per_client = np.zeros(client_num, dtype=int)
-    print("total_samples_per_client", total_samples_per_client)
+    # print("total_samples_per_client", total_samples_per_client)
 
     for class_id in range(fl_class_num):
-        print("dirichlet non iid", class_id)
+        print("dirichlet non iid -id:", class_id)
         class_indices = label_indices[class_id]
         np.random.shuffle(class_indices)
 
@@ -703,7 +703,7 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
     original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=0)
-    test_loader = original_test_loader  # default to original if no attack applies
+    test_loader = copy.deepcopy(original_test_loader)  # default to original if no attack applies
 
     # Add at start
     torch.cuda.empty_cache()
@@ -778,8 +778,10 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
                 total_pred[int(class_id)] += 1
                 if class_id == pred:
                     correct_pred[int(class_id)] += 1
-    test_loss /= len(original_test_loader)
-    accuracy = correct / len(original_test_loader.dataset)
+    
+    print("test_loss in val", test_loss)
+    test_loss /= len(original_test_loader) + 1e-8
+    accuracy = correct / len(original_test_loader.dataset) + 1e-8
     for class_id in range(class_num):
         if total_pred[class_id] != 0:
             per_class_accuracy[class_id] = correct_pred[class_id] / total_pred[class_id]
