@@ -92,7 +92,7 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
     for client_id in client_selection:
         c_sd_before[client_id] = copy.deepcopy(mco_dict[client_id]["c_model"].state_dict())
         client_data = fl_data_dict[client_id]
-        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=5, drop_last=True)
+        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=0, drop_last=True)
 
         # train the classifier model
         # for dba attack
@@ -240,6 +240,7 @@ def create_data_fl_clients(client_num, noniid_type, label_skew_alpha, p_degree, 
         fl_data_dict = p_degree_non_iid(client_group, p_degree, fl_class_num, client_num, fl_train)
         labels_per_client_dict = {x:list(range(fl_class_num)) for x in list(range(client_num))}
     elif noniid_type == 'dirichlet':
+        print("dirichlet if else statement")
         fl_data_dict, labels_per_client_dict, label_count_per_client_dict = dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha) 
     return fl_data_dict, labels_per_client_dict, label_count_per_client_dict
 
@@ -322,19 +323,24 @@ def label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha):
 
 
 def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
+    print("dirichlet non iid")
     # Group indices by label
     label_indices = [[] for _ in range(fl_class_num)]
+    # fl_train = list(fl_train)
     for idx, (_, label) in enumerate(fl_train):
         label_indices[label].append(idx)
-
+    print("label_indices", label_indices)
     # Dicts to store client data
     fl_data_dict = defaultdict(list)
     labels_per_client_dict = {x: list(range(fl_class_num)) for x in range(client_num)}
     label_count_per_client_dict = {x: defaultdict(int) for x in range(client_num)}
-
+    print("labels_per_client_dict", labels_per_client_dict)
+    
     total_samples_per_client = np.zeros(client_num, dtype=int)
+    print("total_samples_per_client", total_samples_per_client)
 
     for class_id in range(fl_class_num):
+        print("dirichlet non iid", class_id)
         class_indices = label_indices[class_id]
         np.random.shuffle(class_indices)
 
@@ -696,7 +702,7 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 
 
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
-    original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=5)
+    original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=0)
     test_loader = original_test_loader  # default to original if no attack applies
 
     # Add at start
@@ -715,7 +721,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=5)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=0)
 
     elif attack_method == 'dba':
         test_targets = [x[1] for x in fl_test]
@@ -729,7 +735,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=5)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=0)
 
     elif attack_method == 'clear_label_backdoor':
         test_targets = [x[1] for x in fl_test]
@@ -741,7 +747,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=5)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=0)
 
     # Set up containers
     model.eval()
