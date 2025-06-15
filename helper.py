@@ -34,7 +34,7 @@ from models.mnist_6l import Mnist_6L
 from models.model_utils import get_model
 import torch.nn as nn
 import torch.nn.functional as F
-
+from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, dba_poisoning_per_batch=0.2, 
@@ -570,28 +570,46 @@ def add_trigger(img_tensor, pattern_size, rgb, solid):
     return img_tensor
 
 
-def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, c_momentum, num_classes, dataset):
+def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, c_momentum, num_classes, dataset, params):
     mco_dict = {}
+    scheduler_name = params.get('c_scheduler', 'none')
+    
     for i in range(-1, client_num):
-        # Create model directly on target device
+        # Create model
         c_model_class = get_model(c_model_name)
         c_model_fn = partial(c_model_class, num_classes=num_classes, dataset=dataset)
-        c_model = c_model_fn().to(device)  # Move to device immediately
+        c_model = c_model_fn().to(device)
         
-        c_criterion = nn.CrossEntropyLoss().to(device)  # Move criterion to device
+        c_criterion = nn.CrossEntropyLoss().to(device)
         
-        if i == -1:
-            c_optimizer = torch.optim.SGD(c_model.parameters(),
-                        lr=server_optim_c_lr, momentum=c_momentum)
-        else:
-            c_optimizer = torch.optim.SGD(c_model.parameters(),
-                            lr=c_lr, momentum=c_momentum)
+        # Choose LR
+        lr = server_optim_c_lr if i == -1 else c_lr
 
-        mco_dict[i] = {"c_model": c_model, 
-                      "c_criterion": c_criterion, 
-                      "c_optimizer": c_optimizer}
-    
+        # Create optimizer
+        c_optimizer = torch.optim.SGD(c_model.parameters(), lr=lr, momentum=c_momentum)
+
+        # Create scheduler if specified
+        c_scheduler = None
+        if scheduler_name == 'cosine':
+            T_max = params.get('c_scheduler_T_max', 100)
+            c_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(c_optimizer, T_max=T_max)
+        elif scheduler_name == 'multistep':
+            milestones = params.get('c_scheduler_milestones', [50, 80])
+            gamma = params.get('c_scheduler_gamma', 0.1)
+            c_scheduler = torch.optim.lr_scheduler.MultiStepLR(c_optimizer, milestones=milestones, gamma=gamma)
+
+        mco_dict[i] = {
+            "c_model": c_model,
+            "c_criterion": c_criterion,
+            "c_optimizer": c_optimizer,
+        }
+
+        # Attach scheduler only if created
+        if c_scheduler:
+            mco_dict[i]["c_scheduler"] = c_scheduler
+
     return mco_dict
+
 
 
 # def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
