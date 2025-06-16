@@ -98,7 +98,14 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
     # Create dummy optimizer for global scheduler
     global_optimizer = torch.optim.SGD([torch.zeros(1, requires_grad=True)], lr=c_lr)
-
+    
+    class ConstantLR:
+        def __init__(self, optimizer):
+            self.optimizer = optimizer
+            
+        def step(self):
+            pass  # Do nothing, maintaining the same learning rate
+        
     # Create global LR scheduler based on config
     if scheduler_name == 'cosine':
         T_max = params.get('c_scheduler_T_max', fl_iter_num)
@@ -108,7 +115,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         gamma = params.get('c_scheduler_gamma', 0.1)
         global_scheduler = torch.optim.lr_scheduler.MultiStepLR(global_optimizer, milestones=milestones, gamma=gamma)
     else:
-        global_scheduler = None
+        global_scheduler = ConstantLR(global_optimizer)  # Instead of None
 
     try:
         os.makedirs(exp_dir)
@@ -313,11 +320,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         server_before = flatten_model(mco_dict[-1]["c_model"].state_dict())
         
-        
-        # Step global scheduler
-        global_scheduler.step()
         global_lr = global_scheduler.get_last_lr()[0]
-
+        
         # Assign global_lr to each selected client
         for client_id in client_selection:
             for param_group in mco_dict[client_id]["c_optimizer"].param_groups:
@@ -329,6 +333,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                    client_batch_size, dba_poisoning_per_batch,
                                    fedoda_attacker=foda, malicious_fraction=malicious_fraction,
                                    device=device)
+
+        # Step global scheduler
+        global_scheduler.step()
 
         server_after = flatten_model(mco_dict[-1]["c_model"].state_dict())
         server_delta = (server_after - server_before).norm()
