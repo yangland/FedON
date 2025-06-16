@@ -269,9 +269,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         os.makedirs(img_dir)
 
     # create models 
-    mco_dict = create_fl_models(client_num, device, c_model_name,  c_lr, server_optim_c_lr, c_momentum,
+    mco_dict = create_fl_models(client_num, device, c_model_name,  
+                                c_lr, server_optim_c_lr, c_momentum,
                                 num_classes=fl_class_num,
-                                dataset=params['fl_task'])
+                                dataset=params['fl_task'],
+                                params=params)
 
     # send main to all clients
     mco_dict = send_main_to_clients(client_num, mco_dict, device)

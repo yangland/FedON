@@ -1,4 +1,4 @@
-cuda_device: 6
+cuda_device: 1
 if_series: False
 
 # defense methods
@@ -21,7 +21,7 @@ m: 0 # malicious clients
 clients_per_iter: 10
 fl_class_num: 100
 fl_task: 'cifar100'
-c_model: "ResNet14_Light" # "ConvNet", "ResNet18", "VGG13_32", "SqueezeNet_32", "SimpleCNN_32"
+c_model: "ResNet20" # "ConvNet", "ResNet18", "VGG13_32", "SqueezeNet_32", "SimpleCNN_32"
 ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.5
@@ -32,11 +32,18 @@ attack_method: 'none'
 
 image_size: [3, 32, 32]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.001
+c_lr: 0.1
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 500
+c_scheduler: cosine
+c_scheduler_T_max: 800  # Same as total FL iterations if training up to 800 rounds
+# c_scheduler: multistep
+# c_scheduler_milestones: [400, 600]  # Drop at 50% and 75% of total training
+# c_scheduler_gamma: 0.1
+
+
+fl_iter_num: 800
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
