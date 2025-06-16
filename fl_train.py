@@ -100,11 +100,16 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     global_optimizer = torch.optim.SGD([torch.zeros(1, requires_grad=True)], lr=c_lr)
     
     class ConstantLR:
+        """A dummy scheduler that maintains a constant learning rate."""
         def __init__(self, optimizer):
             self.optimizer = optimizer
+            self.base_lrs = [group['lr'] for group in optimizer.param_groups]
             
         def step(self):
-            pass  # Do nothing, maintaining the same learning rate
+            pass  # Do nothing (keeps LR constant)
+        
+        def get_last_lr(self):
+            return self.base_lrs  # Returns the current LR(s)
         
     # Create global LR scheduler based on config
     if scheduler_name == 'cosine':
