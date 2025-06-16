@@ -897,10 +897,10 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
                                   model = mco_dict[-1]["c_model"], 
                                   criterion = mco_dict[-1]["c_criterion"], 
                                   optimizer = mco_dict[-1]["c_optimizer"], 
+                                  attack_method=None,
                                   client_id=-1,
                                   malicious_client_ids=[],
                                   optimizer_poison=None,
-                                  scheduler=None,
                                   dba_poisoning_per_batch=0,
                                   device=device
                                 )

@@ -434,7 +434,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             grad_add_to_model(mco_dict[-1]["c_model"], 
                               aggr_c_lr, 
                               c_grad,
-                              update_bn_buffers=True, 
+                              update_bn_buffers=False, 
                               update_batched_tracked=True)  # false and false for ResNet       
         
         # for targeted attack test on one of the malicious client
