@@ -97,18 +97,21 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
         # train the classifier model
         # for dba attack
         optimizer_poison = torch.optim.SGD(mco_dict[client_id]["c_model"].parameters(), lr=0.005)
+        lr_scheduler = mco_dict[client_id].get("c_scheduler", None)
         
         for epoch in range(c_epochs):
-            loss, acc = train_c_model(client_dl, mco_dict[client_id]["c_model"], 
-                                        mco_dict[client_id]["c_criterion"], 
-                                        mco_dict[client_id]["c_optimizer"], 
-                                        attack_method, client_id, 
-                                        malicious_client_ids,
-                                        optimizer_poison,
-                                        dba_poisoning_per_batch,
-                                        device=device)
+            loss, acc, current_lr = train_c_model(client_dl, 
+                                                mco_dict[client_id]["c_model"], 
+                                                mco_dict[client_id]["c_criterion"], 
+                                                mco_dict[client_id]["c_optimizer"], 
+                                                attack_method,
+                                                client_id, 
+                                                malicious_client_ids,
+                                                optimizer_poison,
+                                                dba_poisoning_per_batch=dba_poisoning_per_batch,
+                                                device=device)
             if epoch % 1 == 0:
-                logger.info(f"  client{client_id}_ep{epoch}: C-Model, loss: {loss:.6f}, train acc: {acc:.6f}")
+                logger.info(f"  client{client_id}_ep{epoch}: C-Model, loss: {loss:.6f}, train acc: {acc:.6f}, lr: {current_lr:.6f}")
         
 
     return c_sd_before
@@ -617,13 +620,6 @@ def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, 
     return mco_dict
 
 
-
-# def send_main_to_clients(client_num, mco_dict, c_g=[True, True]):
-#     with torch.no_grad():
-#         for i in range(client_num):
-#                 mco_dict[i]["c_model"].load_state_dict(mco_dict[-1]["c_model"].state_dict())
-#     return mco_dict
-
 def send_main_to_clients(client_num, mco_dict, device):
     with torch.no_grad():
         server_state = mco_dict[-1]["c_model"].state_dict()
@@ -638,15 +634,15 @@ def send_main_to_clients(client_num, mco_dict, device):
     torch.cuda.empty_cache()
     return mco_dict
 
+
 def train_c_model(train_loader, model, criterion, optimizer, attack_method, client_id,
                   malicious_client_ids, optimizer_poison=None, dba_poisoning_per_batch=0.2, device=None):
-    # train the model for 1 epoch
     model = model.to(device)
     model.train()
     train_loss = 0.0
     correct = 0
     trigger_value = 1
-    
+
     if attack_method == 'dba' and client_id in malicious_client_ids:
         print('dba client id', client_id)
 
@@ -695,10 +691,10 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
             correct += prediction.eq(target.view_as(prediction)).sum().item()
 
     else:
-        # normal training
+        # Normal training
         for data, target in train_loader:
             data = data.to(device)
-            target = target.to(device)       
+            target = target.to(device)
 
             output = model(data)
             loss = criterion(output, target)
@@ -709,13 +705,10 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 
             train_loss += loss.item()
             prediction = output.argmax(dim=1, keepdim=True)
-            correct += prediction.eq(target.view_as(prediction)).sum().item()    
-    
-    # print("train_loss", train_loss)
-    # print("correct", correct)
-    # print("len(train_loader.dataset)", len(train_loader.dataset))
-    # print("len(train_loader)", len(train_loader))
-    return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset)
+            correct += prediction.eq(target.view_as(prediction)).sum().item()
+
+    current_lr = optimizer.param_groups[0]['lr']
+    return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset), current_lr
 
 
 
@@ -900,14 +893,14 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
     client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=0)
     # train the classifier model
     for epoch in range(c_epochs):
-        loss, acc = train_c_model(train_loader = client_dl, 
+        loss, acc, lr = train_c_model(train_loader = client_dl, 
                                   model = mco_dict[-1]["c_model"], 
                                   criterion = mco_dict[-1]["c_criterion"], 
                                   optimizer = mco_dict[-1]["c_optimizer"], 
-                                  attack_method = 'none',
                                   client_id=-1,
                                   malicious_client_ids=[],
                                   optimizer_poison=None,
+                                  scheduler=None,
                                   dba_poisoning_per_batch=0,
                                   device=device
                                 )

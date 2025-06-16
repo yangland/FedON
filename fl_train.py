@@ -92,6 +92,23 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     dba_poisoning_per_batch = params.get('dba_poisoning_per_batch', 0.2)
     client_list = list(range(client_num))
     
+    # global scheduler for the learning rate
+    # Parse scheduler config from YAML
+    scheduler_name = params.get('c_scheduler', 'none')
+
+    # Create dummy optimizer for global scheduler
+    global_optimizer = torch.optim.SGD([torch.zeros(1, requires_grad=True)], lr=c_lr)
+
+    # Create global LR scheduler based on config
+    if scheduler_name == 'cosine':
+        T_max = params.get('c_scheduler_T_max', fl_iter_num)
+        global_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(global_optimizer, T_max=T_max)
+    elif scheduler_name == 'multistep':
+        milestones = params.get('c_scheduler_milestones', [int(0.5 * fl_iter_num), int(0.75 * fl_iter_num)])
+        gamma = params.get('c_scheduler_gamma', 0.1)
+        global_scheduler = torch.optim.lr_scheduler.MultiStepLR(global_optimizer, milestones=milestones, gamma=gamma)
+    else:
+        global_scheduler = None
 
     try:
         os.makedirs(exp_dir)
@@ -296,6 +313,16 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         server_before = flatten_model(mco_dict[-1]["c_model"].state_dict())
         
+        
+        # Step global scheduler
+        global_scheduler.step()
+        global_lr = global_scheduler.get_last_lr()[0]
+
+        # Assign global_lr to each selected client
+        for client_id in client_selection:
+            for param_group in mco_dict[client_id]["c_optimizer"].param_groups:
+                param_group["lr"] = global_lr
+
         # local training for clients' C models including attack
         c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict,
@@ -395,8 +422,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             grad_add_to_model(mco_dict[-1]["c_model"], 
                               aggr_c_lr, 
                               c_grad,
-                              update_bn_buffers=False, 
-                              update_batched_tracked=False)  # false and false for ResNet       
+                              update_bn_buffers=True, 
+                              update_batched_tracked=True)  # false and false for ResNet       
         
         # for targeted attack test on one of the malicious client
         # validation on server's C model
