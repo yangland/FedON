@@ -19,6 +19,8 @@ from more_itertools import chunked
 from torch.utils.data import Dataset
 from PIL import Image
 from collections import defaultdict
+from torchvision.datasets import ImageFolder
+import os
 
 last_percent_reported = None
 
@@ -71,6 +73,15 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
     elif dataset == 'svhn':
         ds_train = datasets.SVHN('./data/SVHN', split = 'train', download=True, transform=transform)
         ds_test = datasets.SVHN('./data/SVHN', split = 'test', download=True, transform=transform)
+    elif dataset == 'imagenet10':
+        imagenette_dir = './data/imagenette2-160'  # Change to -320 or -224 if you prefer
+
+        if not os.path.exists(imagenette_dir):
+            raise RuntimeError(f"Imagenette directory not found at {imagenette_dir}. "
+                            f"Please download it using the provided method below.")
+
+        ds_train = ImageFolder(os.path.join(imagenette_dir, 'train'), transform=transform)
+        ds_test = ImageFolder(os.path.join(imagenette_dir, 'val'), transform=transform)
     elif dataset == 'omniglot':
         orig_set = datasets.Omniglot('./data',  download=True, transform=transform)   
         
