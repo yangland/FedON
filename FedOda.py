@@ -1098,9 +1098,19 @@ class FedOda:
         
         new_model = deepcopy(model)
         update_dict = vector_to_state_dict(update_vector, new_model)
-        for (name, param), (_, update) in zip(new_model.named_parameters(), update_dict.items()):
-            # print(f"[DEBUG] update.dtype = {update.dtype}, param dtype = {param.data.dtype}")
-            param.data += update
+        # for (name, param), (_, update) in zip(new_model.named_parameters(), update_dict.items()):
+        #     # print(f"[DEBUG] update.dtype = {update.dtype}, param dtype = {param.data.dtype}")
+        #     param.data += update
+
+        for name, param in new_model.named_parameters():
+            if name in update_dict:
+                update = update_dict[name]
+                if param.data.shape == update.shape:  # Ensure shapes match
+                    param.data += update.to(param.data.dtype)  # Ensure dtype compatibility
+                else:
+                    raise ValueError(f"Shape mismatch for {name}: model param {param.data.shape} vs update {update.shape}")
+
+
         return new_model
 
 
