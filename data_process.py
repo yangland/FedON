@@ -101,12 +101,12 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         ds_train = datasets.EMNIST('./data', split = 'letters', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'letters', train=False, download=True, transform=transform)
     elif dataset == "imagenette":
-        # ds_train = datasets.Imagenette(root='./data/imagenette2-320/train', split='train', size="320px", download=False, transform=transform)
-        # ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
-        # ds_train = CachedDataset(ds_train)
-        # ds_test = CachedDataset(ds_test)
-        ds_train = load_or_cache_imagenette(split='train', transform=transform)
-        ds_test = load_or_cache_imagenette(split='test', transform=transform)
+        ds_train = datasets.Imagenette(root='./data/imagenette2-320/train', split='train', size="320px", download=False, transform=transform)
+        ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
+        ds_train = CachedDataset(ds_train)
+        ds_test = CachedDataset(ds_test)
+        # ds_train = load_or_cache_imagenette(split='train', transform=transform)
+        # ds_test = load_or_cache_imagenette(split='test', transform=transform)
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)

@@ -1,0 +1,59 @@
+cuda_device: 4
+if_series: False
+
+# defense methods
+defense: "AGGR" # "AGGR", "FedEval"
+# "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
+aggr: "fedavg" # "multi-krum", "fedavg", "fltrust"
+aggr_c_lr: 1 # 0.75
+aggr_g_lr: 1 # 1.0
+fltrust_root_iid: True # False, True
+
+# sensors
+sensor_dir: "saved_models"
+sensor_models: [] # "cifar10_none_20240906.pth",
+master_sensor: "none" # "CLIP", "FID", "none"
+sensor_embed_dim: 256
+
+# fl client
+n: 100 # total clients 
+m: 0 # malicious clients
+clients_per_iter: 10
+fl_class_num: 10
+fl_task: 'imagenette'
+c_model: "ResNet18" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet", "EfficientNetB0"
+ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
+noniid_type: 'dirichlet' # "p-degree", "label_skew"
+dirichlet_alpha: 10
+# '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
+# 'clear_label_backdoor', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'dba', 'FedOda']
+attack_method: 'none'
+
+
+image_size: [3, 224, 224]
+c_epochs: 1 # 2, 5, 10
+c_lr: 0.1
+c_momentum: 0.9
+client_batch_size: 64
+
+fl_iter_num: 300
+server_optim_c_lr: 0.005
+server_batch_size: 64
+server_c_epochs: 1
+server_g_epochs: 1
+
+c_scheduler: cosine
+c_scheduler_T_max: 300  # Same as total FL iterations if training up to 800 rounds
+# c_scheduler: multistep
+# c_scheduler_milestones: [400, 600]  # Drop at 50% and 75% of total training
+# c_scheduler_gamma: 0.1
+
+# FedOda parameters
+fedoda:
+  E: 5
+  scaling_factor: 8
+  reduce_factor: 0.9
+  increase_factor: 1.05
+  threshold: 0.6
+
+clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"

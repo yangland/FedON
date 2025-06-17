@@ -32,7 +32,7 @@ attack_magnitude: 1
 
 image_size: [3, 224, 224]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.1
+c_lr: 0.001
 c_momentum: 0.9
 client_batch_size: 64
 
@@ -42,8 +42,8 @@ server_batch_size: 64
 server_c_epochs: 1
 server_g_epochs: 1
 
-c_scheduler: cosine
-c_scheduler_T_max: 500  # Same as total FL iterations if training up to 800 rounds
+c_scheduler: None
+c_scheduler_T_max: None  # Same as total FL iterations if training up to 800 rounds
 # c_scheduler: multistep
 # c_scheduler_milestones: [400, 600]  # Drop at 50% and 75% of total training
 # c_scheduler_gamma: 0.1

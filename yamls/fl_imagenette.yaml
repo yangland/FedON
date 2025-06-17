@@ -43,7 +43,7 @@ server_c_epochs: 1
 server_g_epochs: 1
 
 c_scheduler: cosine
-c_scheduler_T_max: 600  # Same as total FL iterations if training up to 800 rounds
+c_scheduler_T_max: 300  # Same as total FL iterations if training up to 800 rounds
 # c_scheduler: multistep
 # c_scheduler_milestones: [400, 600]  # Drop at 50% and 75% of total training
 # c_scheduler_gamma: 0.1
