@@ -101,10 +101,12 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         ds_train = datasets.EMNIST('./data', split = 'letters', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'letters', train=False, download=True, transform=transform)
     elif dataset == "imagenette":
-        ds_train = datasets.Imagenette(root='./data/imagenette2-320/train', split='train', size="320px", download=False, transform=transform)
-        ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
-        ds_train = CachedDataset(ds_train)
-        ds_test = CachedDataset(ds_test)
+        # ds_train = datasets.Imagenette(root='./data/imagenette2-320/train', split='train', size="320px", download=False, transform=transform)
+        # ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
+        # ds_train = CachedDataset(ds_train)
+        # ds_test = CachedDataset(ds_test)
+        ds_train = load_or_cache_imagenette(split='train', transform=transform)
+        ds_test = load_or_cache_imagenette(split='test', transform=transform)
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)
@@ -364,3 +366,37 @@ class CachedDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.samples)
+
+
+class ListDataset(Dataset):
+    def __init__(self, data_list):
+        self.data = data_list
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
+    
+    
+def load_or_cache_imagenette(split='train', transform=None, cache_dir='./data/cache'):
+    os.makedirs(cache_dir, exist_ok=True)
+
+    pt_file = os.path.join(cache_dir, f'imagenette_{split}.pt')
+    image_root = f'./data/imagenette2-320/{split}'
+
+    if os.path.exists(pt_file):
+        print(f"[INFO] Loading cached Imagenette {split} dataset from {pt_file}")
+        data_list = torch.load(pt_file)
+        return ListDataset(data_list)
+
+    print(f"[INFO] Caching Imagenette {split} dataset to {pt_file} (Only done once)")
+    base_dataset = datasets.ImageFolder(root=image_root, transform=transform)
+
+    # Preload all images into memory
+    data_list = [base_dataset[i] for i in range(len(base_dataset))]
+
+    # Save it
+    torch.save(data_list, pt_file)
+
+    return ListDataset(data_list)
