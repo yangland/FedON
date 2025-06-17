@@ -1,5 +1,5 @@
 
-import copy
+from copy import deepcopy
 import logging
 logger = logging.getLogger("individual_logging")
 from torch.utils.data import ConcatDataset, DataLoader, Subset
@@ -46,10 +46,10 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
     if attack_method == 'FedOda':
         selected_malicious_ids = set(client_selection) & set(malicious_client_ids)
         if fedoda_attacker.server_model is None:
-            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+            fedoda_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
         else:
-            fedoda_attacker.previous_server_model = copy.deepcopy(fedoda_attacker.server_model)
-            fedoda_attacker.server_model = copy.deepcopy(mco_dict[-1]["c_model"])
+            fedoda_attacker.previous_server_model = deepcopy(fedoda_attacker.server_model)
+            fedoda_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
 
             
         fedoda_attacker.current_s_m = len(selected_malicious_ids)
@@ -90,7 +90,7 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
     c_sd_before = {}
 
     for client_id in client_selection:
-        c_sd_before[client_id] = copy.deepcopy(mco_dict[client_id]["c_model"].state_dict())
+        c_sd_before[client_id] = deepcopy(mco_dict[client_id]["c_model"].state_dict())
         client_data = fl_data_dict[client_id]
         client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=0, drop_last=True)
 
@@ -456,7 +456,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
     
     # randommly select label to attack
     # m_label1, m_label2 = random.sample(list(range(class_num)), 2)
-    fl_data_dict2 = copy.deepcopy(fl_data_dict)
+    fl_data_dict2 = deepcopy(fl_data_dict)
     
     mali_labels = []
 
@@ -714,7 +714,7 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
     original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=0)
-    test_loader = copy.deepcopy(original_test_loader)  # default to original if no attack applies
+    test_loader = deepcopy(original_test_loader)  # default to original if no attack applies
 
     # Add at start
     torch.cuda.empty_cache()
@@ -888,7 +888,7 @@ def weight_to_model(model, weight):
 
 def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, device):
         
-    c_sd_before = copy.deepcopy(mco_dict[-1]["c_model"].state_dict())
+    c_sd_before = deepcopy(mco_dict[-1]["c_model"].state_dict())
 
     client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=0)
     # train the classifier model
@@ -907,7 +907,6 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
         if epoch % 1 == 0:
             logger.info(f"FLTrust server_ep{epoch}: C-Model, loss: {loss:.6f}, train acc: {acc:.6f}")
     
-    
     c_grad = model_weight_diff(mco_dict[-1]["c_model"].state_dict(), c_sd_before)
 
     # remove the influance from the server training
@@ -917,12 +916,14 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
 
 
 def grad_weighted_sum(grad_dict, weights):
-
-    new_grad_dict={x: 0 for x in grad_dict[list(grad_dict.keys())[0]].keys()}
-    for client_id in grad_dict.keys():
-        for layer, param in grad_dict[client_id].items():
-            new_grad_dict[layer] += weights[client_id] * param
+    new_grad_dict = {}
+    for layer in grad_dict[list(grad_dict.keys())[0]]:
+        # Skip non-learnable buffers
+        if 'running_mean' in layer or 'running_var' in layer or 'num_batches_tracked' in layer:
+            continue
+        new_grad_dict[layer] = sum(weights[client_id] * grad_dict[client_id][layer] for client_id in grad_dict)
     return new_grad_dict
+
 
 
 

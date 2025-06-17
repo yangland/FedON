@@ -404,7 +404,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                         logger.warning(f"[DEBUG] Iter {iter} - Skipping client {client_id} due to non-finite gradients")
                         continue
                     client_trust_score, client_clipped_value = cosScoreAndClipValue(server_c_grad, client_grad)
-                    if not torch.isfinite(torch.tensor(client_trust_score)):
+                    if not math.isfinite(client_trust_score):
                         logger.warning(f"[WARNING] Iter {iter} - Non-finite trust score for client {client_id}")
                     if not torch.isfinite(client_clipped_value).all():
                         logger.warning(f"[WARNING] Iter {iter} - Non-finite clipped value for client {client_id}")
@@ -423,19 +423,30 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 float_weights = {k: v.item() for k, v in fltrust_weights.items()}
                 logger.info(f"fltrust_weights: {float_weights}")
                 c_grad = grad_weighted_sum(c_grad_dict, fltrust_weights)
+                
+                for k, v in c_grad.items():
+                    if not torch.isfinite(v).all():
+                        logger.error(f"[ERROR] Non-finite value in aggregated c_grad[{k}]")
+                    else:
+                        logger.debug(f"[DEBUG] Aggregated Grad Norm - {k}: {v.norm().item():.6f}")
+
             
             # check nan
-            if has_nan_grad(c_grad):
+            if has_nan_state_dict(c_grad):
                 logger.error(f"[ERROR] Iter {iter} - NaN in c_grad. Skipping update.")
-                continue  # Or break, or save and exit
 
             
             # Update the models in mco_dict directly
             grad_add_to_model(mco_dict[-1]["c_model"], 
                               aggr_c_lr, 
                               c_grad,
-                              update_bn_buffers=False, 
+                              update_bn_buffers=True, 
                               update_batched_tracked=True)  # false and false for ResNet       
+        
+            # check nan
+            if has_nan_state_dict(mco_dict[-1]["c_model"].state_dict()):
+                logger.error(f"[ERROR] Iter {iter} - NaN in server state dict. Skipping update.")
+        
         
         # for targeted attack test on one of the malicious client
         # validation on server's C model
@@ -762,9 +773,14 @@ def has_non_finite_tensor(tensor_dict, name=''):
     return False
 
 
-def has_nan_grad(grad_dict):
-    for k, v in grad_dict.items():
-        if isinstance(v, torch.Tensor) and not torch.isfinite(v).all():
-            print(f"[DEBUG] Non-finite in grad key: {k}")
-            return True
+def has_nan_state_dict(state_dict):
+    for k, v in state_dict.items():
+        if isinstance(v, torch.Tensor):
+            if torch.isnan(v).any():
+                print(f"[DEBUG] NaN in model state key: {k}")
+                return True
+            if torch.isinf(v).any():
+                print(f"[DEBUG] Inf in model state key: {k}")
+                return True
     return False
+
