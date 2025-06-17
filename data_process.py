@@ -103,6 +103,8 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
     elif dataset == "imagenette":
         ds_train = datasets.Imagenette(root='./data/imagenette2-320/train', split='train', size="320px", download=False, transform=transform)
         ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
+        ds_train = CachedDataset(ds_train)
+        ds_test = CachedDataset(ds_test)
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)
@@ -348,3 +350,17 @@ def quantity_based_label_dist_skew(fl_class_num, client_num, label_skew_alpha):
     print("quantity_based_label_dist_skew: count", count)
     label_counts = Counter(np.concatenate(list(labels_per_client_dict.values())))
     return labels_per_client_dict, label_counts
+
+
+class CachedDataset(torch.utils.data.Dataset):
+    def __init__(self, base_dataset):
+        self.samples = []
+        for i in range(len(base_dataset)):
+            img, label = base_dataset[i]
+            self.samples.append((img, label))
+
+    def __getitem__(self, index):
+        return self.samples[index]
+
+    def __len__(self):
+        return len(self.samples)
