@@ -325,6 +325,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         
         server_before = flatten_model(mco_dict[-1]["c_model"].state_dict())
         
+        # STEP 1: Step the global scheduler (safe now, since clients train after this)
+        global_scheduler.step()
+
+        # STEP 2: Get the new global LR to be used for this round
         global_lr = global_scheduler.get_last_lr()[0]
         
         # Assign global_lr to each selected client
