@@ -354,12 +354,19 @@ def quantity_based_label_dist_skew(fl_class_num, client_num, label_skew_alpha):
     return labels_per_client_dict, label_counts
 
 
-class CachedDataset(torch.utils.data.Dataset):
+
+class CachedDataset(Dataset):
     def __init__(self, base_dataset):
+        print("[INFO] Caching dataset into memory with tensors...")
         self.samples = []
         for i in range(len(base_dataset)):
             img, label = base_dataset[i]
-            self.samples.append((img, label))
+            # Convert PIL Image to Tensor immediately (via transform)
+            if isinstance(img, torch.Tensor):
+                self.samples.append((img, label))
+            else:
+                raise ValueError("Expected dataset transform to convert image to tensor.")
+        print(f"[INFO] Cached {len(self.samples)} samples in memory.")
 
     def __getitem__(self, index):
         return self.samples[index]
@@ -367,16 +374,6 @@ class CachedDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.samples)
 
-
-class ListDataset(Dataset):
-    def __init__(self, data_list):
-        self.data = data_list
-
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-    def __len__(self):
-        return len(self.data)
     
     
 def load_or_cache_imagenette(split='train', transform=None, cache_dir='./data/cache'):
