@@ -859,7 +859,7 @@ class FedOda:
             # Get client-specific data
             client_data = self.fl_mali_data_dict[client_id]
             client_dl = DataLoader(client_data, batch_size=batch_size, 
-                                shuffle=True, num_workers=0, drop_last=True)
+                                shuffle=True, num_workers=4, drop_last=True)
             
             # Train the model on client's own data
             mco_dict[client_id]["c_model"].train()

@@ -559,7 +559,7 @@ def main():
 
     # Combine datasets from clients 0 to 9 as malicious clients's pooled data
     combined_dataset = ConcatDataset([fl_data_dict[i] for i in range(config.mali_client_num)])
-    train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=0)
+    train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=4)
     
     # Get models
     model_class = get_model(config.model_name)
