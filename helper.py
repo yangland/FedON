@@ -325,10 +325,32 @@ def label_skew_non_iid(fl_class_num, fl_train, client_num, label_skew_alpha):
 
 
 
+
+def print_label_distribution(dataset):
+    label_counter = Counter()
+    for _, label in dataset:
+        label_counter[label] += 1
+
+    print("\n[INFO] Label Distribution:")
+    for label in sorted(label_counter):
+        print(f"Label {label}: {label_counter[label]} samples")
+    print(f"Total classes: {len(label_counter)}")
+    print(f"Max label index: {max(label_counter)}\n")
+
+
+
 def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
     print("dirichlet non iid")
     # Group indices by label
+    print_label_distribution(fl_train)
+    
     label_indices = [[] for _ in range(fl_class_num)]
+    
+    for idx, (_, label) in enumerate(fl_train):
+        if label >= fl_class_num:
+            raise ValueError(f"Label {label} exceeds number of classes ({fl_class_num})")
+        label_indices[label].append(idx)
+    
     # fl_train = list(fl_train)
     for idx, (_, label) in enumerate(fl_train):
         label_indices[label].append(idx)
@@ -917,11 +939,21 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
 
 def grad_weighted_sum(grad_dict, weights):
     new_grad_dict = {}
-    for layer in grad_dict[list(grad_dict.keys())[0]]:
-        # Skip non-learnable buffers
-        if 'running_mean' in layer or 'running_var' in layer or 'num_batches_tracked' in layer:
-            continue
-        new_grad_dict[layer] = sum(weights[client_id] * grad_dict[client_id][layer] for client_id in grad_dict)
+    client_ids = list(grad_dict.keys())
+    first_client_id = client_ids[0]
+
+    for layer in grad_dict[first_client_id]:
+        if 'num_batches_tracked' in layer:
+            # Always take from first client
+            new_grad_dict[layer] = grad_dict[first_client_id][layer]
+        elif 'running_mean' in layer or 'running_var' in layer:
+            # Use first client’s BN stats (or choose a trusted one)
+            new_grad_dict[layer] = grad_dict[first_client_id][layer]
+        else:
+            # Weighted sum for learnable parameters
+            new_grad_dict[layer] = sum(weights[client_id] * grad_dict[client_id][layer] 
+                                       for client_id in grad_dict)
+
     return new_grad_dict
 
 
