@@ -246,8 +246,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                            dataset=params['fl_task'])    
         
         pooled_dataset = ConcatDataset(pooled_data)
-        pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
-        original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=4, pin_memory=True, persistent_workers=True)
+        pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True, num_workers=1, pin_memory=True, persistent_workers=True)
+        original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=1, pin_memory=True, persistent_workers=True)
         
         # object for FedOda class
         foda = FedOda(model_fn=model_fn, 
