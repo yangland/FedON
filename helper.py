@@ -92,7 +92,7 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
     for client_id in client_selection:
         c_sd_before[client_id] = deepcopy(mco_dict[client_id]["c_model"].state_dict())
         client_data = fl_data_dict[client_id]
-        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=1, drop_last=True, pin_memory=True, persistent_workers=True, pin_memory=False)
+        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=1, drop_last=True, persistent_workers=True, pin_memory=False)
 
         # train the classifier model
         # for dba attack
@@ -757,7 +757,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1, pin_memory=True, persistent_workers=True, pin_memory=False)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1,  persistent_workers=True, pin_memory=False)
 
     elif attack_method == 'dba':
         test_targets = [x[1] for x in fl_test]

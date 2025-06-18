@@ -774,7 +774,7 @@ def main():
     )
 
     combined_dataset = torch.utils.data.ConcatDataset([fl_data_dict[i] for i in range(config.mali_client_num)])
-    malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    malicious_train_loader = DataLoader(combined_dataset, batch_size=config.batch_size, shuffle=True, num_workers=2, pin_memory=False)
 
     model_class = get_model(config.model_name)
     model_fn = partial(model_class, num_classes=config.num_classes)
