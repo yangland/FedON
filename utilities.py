@@ -862,5 +862,5 @@ def create_balanced_loader(dataset, batch_size=64, max_samples_per_class=None, s
     print(f"[Balanced Loader] Label distribution: {dict(Counter(balanced_labels))}")
 
     balanced_subset = Subset(dataset, balanced_indices)
-    return DataLoader(balanced_subset, batch_size=batch_size, shuffle=shuffle)
+    return DataLoader(balanced_subset, batch_size=batch_size, shuffle=shuffle, pin_memory=False)
 

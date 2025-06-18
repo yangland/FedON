@@ -92,7 +92,7 @@ def train_c_models(client_selection, fl_data_dict, batch_size, mco_dict, c_epoch
     for client_id in client_selection:
         c_sd_before[client_id] = deepcopy(mco_dict[client_id]["c_model"].state_dict())
         client_data = fl_data_dict[client_id]
-        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=1, drop_last=True, pin_memory=True, persistent_workers=True)
+        client_dl = DataLoader(client_data, batch_size, shuffle=True, num_workers=1, drop_last=True, pin_memory=True, persistent_workers=True, pin_memory=False)
 
         # train the classifier model
         # for dba attack
@@ -738,7 +738,7 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
 
 
 def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attack_method, mali_labels, device=None):
-    original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=1)
+    original_test_loader = DataLoader(fl_test, server_batch_size, shuffle=True, num_workers=1, pin_memory=False)
     test_loader = deepcopy(original_test_loader)  # default to original if no attack applies
 
     # Add at start
@@ -757,7 +757,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1, pin_memory=True, persistent_workers=True)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1, pin_memory=True, persistent_workers=True, pin_memory=False)
 
     elif attack_method == 'dba':
         test_targets = [x[1] for x in fl_test]
@@ -771,7 +771,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1, pin_memory=False)
 
     elif attack_method == 'clear_label_backdoor':
         test_targets = [x[1] for x in fl_test]
@@ -783,7 +783,7 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
         other_indices = list(set(range(len(test_targets))) - set(indices))
         other_data = [x for x in Subset(fl_test, other_indices)]
         modified_test_set = ConcatDataset([backdoored_data, other_data])
-        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1)
+        test_loader = DataLoader(modified_test_set, server_batch_size, shuffle=True, num_workers=1, pin_memory=False)
 
     # Set up containers
     model.eval()
@@ -915,7 +915,7 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
         
     c_sd_before = deepcopy(mco_dict[-1]["c_model"].state_dict())
 
-    client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=1)
+    client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=1, pin_memory=False)
     # train the classifier model
     for epoch in range(c_epochs):
         loss, acc, lr = train_c_model(train_loader = client_dl, 

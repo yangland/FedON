@@ -801,7 +801,7 @@ class FedOda:
         labels = torch.cat(collected_y, dim=0)[:data_size]
 
         # Create new DataLoader from collected data
-        temp_loader = DataLoader(list(zip(inputs, labels)), batch_size=batch_size, shuffle=True)
+        temp_loader = DataLoader(list(zip(inputs, labels)), batch_size=batch_size, shuffle=True, pin_memory=False)
 
         # Simulate local training
         for batch_inputs, batch_labels in temp_loader:
@@ -859,7 +859,7 @@ class FedOda:
             # Get client-specific data
             client_data = self.fl_mali_data_dict[client_id]
             client_dl = DataLoader(client_data, batch_size=batch_size, 
-                                shuffle=True, num_workers=1, drop_last=True)
+                                shuffle=True, num_workers=1, drop_last=True, pin_memory=False)
             
             # Train the model on client's own data
             mco_dict[client_id]["c_model"].train()
