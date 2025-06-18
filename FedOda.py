@@ -73,7 +73,7 @@ class FedOda:
             self.moq_preference_vector = torch.tensor([0.6, 0.4], dtype=torch.float32)  # Adjust as needed
             initial_epsilon = 0.5
             self.moq_agent = MOQAgent(
-                state_dim=3,          # curr_acc, acc_delta, round_norm, model_norm
+                state_dim=3,          # curr_acc, acc_delta, round_norm, model_norm, avg_cos_distance
                 action_dim=2,         # norm_scaling_l2, norm_scaling_cos
                 reward_dim=2,
                 epsilon=initial_epsilon,  # Exploration factor

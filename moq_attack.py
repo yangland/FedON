@@ -20,7 +20,9 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
         curr_model_norm = get_model_l2_norm(fedoda.server_model)
         model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm)/prev_model_norm))
 
+    # state = [curr_acc, acc_delta, model_norm_delta, avg_cos_distance]
     state = [curr_acc, acc_delta, model_norm_delta]
+    # state = [curr_acc, acc_delta, avg_cos_distance]
     state_tensor = torch.tensor(state, dtype=torch.float32).to(agent.device)
 
     # === Step 2: Sample action (normalized space)

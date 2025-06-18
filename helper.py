@@ -912,7 +912,7 @@ def fltrust_server_iteration(iter, c_epochs, root_ds, mco_dict, batch_size, devi
         
     c_sd_before = deepcopy(mco_dict[-1]["c_model"].state_dict())
 
-    client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=4)
+    client_dl = DataLoader(root_ds, batch_size, shuffle=True, num_workers=1)
     # train the classifier model
     for epoch in range(c_epochs):
         loss, acc, lr = train_c_model(train_loader = client_dl, 

@@ -21,7 +21,7 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'imagenette'
-c_model: "ResNet18" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet"
+c_model: "ResNet20" # "ResNet18", "VGG13", "MobileNetV2", "SqueezeNet"
 ddmp_seq: 8 # 7 for 28*28, 8 for 32*32
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alphas: [0.5]
@@ -30,20 +30,20 @@ attack_methods: ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbatio
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
-image_size: [3, 224, 224]
+image_size: [3, 32, 32]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.1
+c_lr: 0.001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 500
+fl_iter_num: 300
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1
 server_g_epochs: 1
 
-c_scheduler: cosine
-c_scheduler_T_max: 500  # Same as total FL iterations if training up to 800 rounds
+c_scheduler: None
+c_scheduler_T_max: None  # Same as total FL iterations if training up to 800 rounds
 
 # FedOda parameters
 fedoda:
