@@ -389,9 +389,12 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 c_grad = normbound_aggr(server_c_sd, c_grad_dict)
             elif aggr == 'fltrust':
                 # train server with root dataset
-                server_c_grad = fltrust_server_iteration(iter, c_epochs,
-                                                        root_ds, mco_dict, 
-                                                        batch_size=5, device=device)
+                server_c_grad = fltrust_server_iteration(iter, 
+                                                        c_epochs=1,
+                                                        root_ds=root_ds, 
+                                                        mco_dict=mco_dict, 
+                                                        batch_size=5, 
+                                                        device=device)
                 
                 
                 if has_non_finite_tensor(server_c_grad, name="server_c_grad"):

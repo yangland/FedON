@@ -730,6 +730,9 @@ def train_c_model(train_loader, model, criterion, optimizer, attack_method, clie
             correct += prediction.eq(target.view_as(prediction)).sum().item()
 
     current_lr = optimizer.param_groups[0]['lr']
+    # print(f"[DEBUG] Correct predictions: {correct}")
+    # print(f"[DEBUG] Dataset size: {len(train_loader.dataset)}")
+    # print(f"Learning rate: {optimizer.param_groups[0]['lr']}")
     return train_loss / len(train_loader.dataset), correct / len(train_loader.dataset), current_lr
 
 
