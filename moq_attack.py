@@ -35,9 +35,9 @@ def moq_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_d
     cos_dist_mali_benign = 1 - F.cosine_similarity(
             mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1).item()
     cos_dist_mali_benign = max(0.0, min(2.0, cos_dist_mali_benign))
-    cos_dist_mali_max =  cos_dist_mali_benign - avg_cos_distance
+    cos_dist_mali_max =  cos_dist_mali_benign
     scaling_cos_ = cos_dist_mali_max/avg_cos_distance
-    fedoda.logger.info(f"Cos Attack Space: {scaling_cos_:1f} X times of avg_cos_distance")
+    fedoda.logger.info(f"Cos Attack Space: {scaling_cos_:1f} X times of avg_cos_distance {avg_cos_distance}")
     
     raw_high_bound = avg_cos_distance * scaling_cos_
     cos_dist_low_bound = 0
