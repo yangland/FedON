@@ -430,7 +430,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 float_weights = {k: v.item() for k, v in fltrust_weights.items()}
                 logger.info(f"fltrust_weights: {float_weights}")
                 c_grad = grad_weighted_sum(c_grad_dict, fltrust_weights)
-                
+            else:
+                raise ValueError(f"[BUG] Unknown aggregation method: {aggr}")    
+            
             for k, v in c_grad.items():
                 if not torch.is_floating_point(v):
                     logger.debug(f"[DEBUG] Skipping norm for non-floating tensor c_grad[{k}] (dtype={v.dtype})")
@@ -440,8 +442,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     logger.error(f"[ERROR] Non-finite value in aggregated c_grad[{k}]")
                 else:
                     logger.debug(f"[DEBUG] Aggregated Grad Norm - {k}: {v.norm().item():.6f}")
-
-
             
             # check nan
             if has_nan_state_dict(c_grad):

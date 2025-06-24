@@ -18,6 +18,8 @@ from attack_bi import bi_attack
 from guided_att_from_action import guided_attack_from_action
 from moq_agent import MOQAgent
 from moq_attack import moq_attack
+from paca_agent import PCACAgent
+from pcac_attack import pcac_attack
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
@@ -50,9 +52,10 @@ class FedOda:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
-        self.attack_mode = "MOQ" # 'BO', "BI", "PPO", "ES" "MOQ"
-        self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
-        self.ppo_episode_memory = []
+        self.attack_mode = "PCAC" # 'BO', "BI", "PPO", "ES" "MOQ", "PCAC"
+        if self.attack_mode == "PPO":
+            self.ppo_agent = PPOAgent(state_dim=5, action_dim=2, device=device, reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
+            self.ppo_episode_memory = []
         self.prev_server_model = None
         self.prev_global_update = None
         self.prev_malicious_update = None
@@ -82,6 +85,19 @@ class FedOda:
                 epsilon_grow=1.05,
                 device=self.device,
                 action_grid_size=9,  # 9x9 grid for actions
+                logger=logger
+            )
+            self.prev_state = None
+            self.prev_action = None
+            self.prev_acc = None
+        
+        if self.attack_mode == "PCAC":
+            self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
+            self.pcac_agent = PCACAgent(
+                state_dim=3,     # same as MOQ
+                action_dim=2,    # norm_scaling_l2, norm_scaling_cos
+                reward_dim=2,    # r1, r2
+                device=self.device,
                 logger=logger
             )
             self.prev_state = None
@@ -532,6 +548,163 @@ class FedOda:
         )
         return float(scaled_r3)
 
+    def compare_proj_vs_pgd_attack(self, benign_update, target_direction, scaling_cos, epsilon):
+        """
+        Compare accuracy after applying PROJ vs PGD malicious updates.
+        """
+        device = self.device
+        model = self.server_model
+        original_model_state = deepcopy(model.state_dict())
+        original_acc = self.validate(model, self.pooled_balanced_loader)
+
+        print(f"Original Accuracy: {original_acc:.4f}")
+
+        # === PROJ mode
+        model.load_state_dict(original_model_state)
+        delta_proj = self.mali_update_craft_l2_cos(
+            model=deepcopy(model),
+            benign_update=benign_update,
+            target_direction=target_direction,
+            scaling_cos_dist=scaling_cos,
+            epsilon=epsilon,
+            mode="PROJ"
+        )
+        model_proj = self.apply_update_to_model(model, delta_proj)
+        acc_proj = self.validate(model_proj, self.pooled_balanced_loader)
+        acc_drop_proj = original_acc - acc_proj
+
+        print(f"[PROJ] Accuracy After Attack: {acc_proj:.4f} | ΔAcc: {acc_drop_proj:.4f} | ||Δ|| = {delta_proj.norm():.4f}")
+
+        # === PGD mode
+        model.load_state_dict(original_model_state)
+        delta_pgd = self.mali_update_craft_l2_cos(
+            model=deepcopy(model),
+            benign_update=benign_update,
+            target_direction=target_direction,
+            scaling_cos_dist=scaling_cos,
+            epsilon=epsilon,
+            mode="PGD",
+            pgd_steps=20,
+            pgd_lr=0.1
+        )
+        model_pgd = self.apply_update_to_model(model, delta_pgd)
+        acc_pgd = self.validate(model_pgd, self.pooled_balanced_loader)
+        acc_drop_pgd = original_acc - acc_pgd
+
+        print(f"[PGD ] Accuracy After Attack: {acc_pgd:.4f} | ΔAcc: {acc_drop_pgd:.4f} | ||Δ|| = {delta_pgd.norm():.4f}")
+
+        # === Comparison
+        if acc_pgd < acc_proj:
+            print("✅ PGD is more harmful than PROJ under same constraint.")
+        elif acc_pgd > acc_proj:
+            print("⚠️ PGD is less harmful than PROJ in this trial.")
+        else:
+            print("ℹ️ PGD and PROJ are equally harmful.")
+
+        return {
+            "original_acc": original_acc,
+            "proj_acc": acc_proj,
+            "pgd_acc": acc_pgd,
+            "proj_delta": delta_proj,
+            "pgd_delta": delta_pgd
+        }
+
+
+    # def mali_update_craft_l2_cos(
+    #     self,
+    #     model,
+    #     benign_update,
+    #     target_direction,
+    #     scaling_cos_dist,
+    #     epsilon,
+    #     harm_threshold=0.0,
+    #     retry_limit=5,
+    #     epsilon_growth=1,
+    #     cos_growth=0.9,
+    # ):
+    #     """
+    #     Craft a malicious update Δₘ such that:
+    #         - Lies in the plane of `target_direction` and `benign_update`
+    #         - L2 norm ≈ epsilon (relaxed over retries)
+    #         - Cosine distance(Δₘ, target_direction) ≈ scaling_cos_dist (relaxed over retries)
+    #         - Reduces validation accuracy
+
+    #     If no such update is found, returns best effort or zero update if all increased accuracy.
+
+    #     Args:
+    #         model (nn.Module): Server model to attack.
+    #         benign_update (torch.Tensor): Benign model update.
+    #         target_direction (torch.Tensor): Malicious direction (unit vector).
+    #         scaling_cos_dist (float): Desired cosine distance from target_direction.
+    #         epsilon (float): L2-norm constraint.
+    #         harm_threshold (float): Minimum accuracy drop to consider harmful.
+    #         retry_limit (int): Max attempts if update is not harmful enough.
+    #         epsilon_growth (float): Factor to increase epsilon each retry.
+    #         cos_growth (float): Factor to increase cosine distance each retry.
+
+    #     Returns:
+    #         torch.Tensor: Crafted malicious update Δₘ.
+    #     """
+    #     original_model_state = deepcopy(model.state_dict())
+    #     original_acc = self.validate(model, self.pooled_balanced_loader)
+
+    #     best_delta = None
+    #     best_acc_drop = -float("inf")
+    #     all_acc_improving = True
+
+    #     for attempt in range(retry_limit):
+    #         # === Step 1: Create direction with desired cosine distance
+    #         crafted_direction = self.project_to_cosine(
+    #             v=benign_update,
+    #             ref=target_direction,
+    #             desired_cos_dist=scaling_cos_dist
+    #         )
+
+    #         # === Step 2: Scale to L2 norm = epsilon
+    #         delta = crafted_direction / crafted_direction.norm() * epsilon
+
+    #         # === Step 3: Apply delta to model and evaluate
+    #         attacked_model = self.apply_update_to_model(model, delta)
+    #         new_acc = self.validate(attacked_model, self.pooled_balanced_loader)
+    #         acc_drop = original_acc - new_acc
+
+    #         cos_dist = 1 - F.cosine_similarity(
+    #             delta.unsqueeze(0), target_direction.unsqueeze(0), dim=1
+    #         ).item()
+
+    #         self.logger.info(
+    #             f"[FedOda][Craft] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+    #         )
+
+    #         # === Check if this attempt is harmful enough
+    #         if acc_drop >= 0:
+    #             self.logger.info(f"[FedOda][Craft] Successful attack at attempt {attempt + 1}")
+    #             model.load_state_dict(original_model_state)
+    #             return delta.detach()
+
+    #         # Track best effort
+    #         if acc_drop > best_acc_drop:
+    #             best_acc_drop = acc_drop
+    #             best_delta = delta.detach()
+
+    #         # If any attempt reduced accuracy, set flag
+    #         if acc_drop < 0:
+    #             all_acc_improving = False
+
+    #         # === Step 4: Relax constraints and retry
+    #         scaling_cos_dist *= cos_growth
+    #         epsilon *= epsilon_growth
+    #         model.load_state_dict(original_model_state)
+
+    #     # === Final fallback
+    #     if all_acc_improving:
+    #         self.logger.warning("[FedOda][Craft] All attempted updates improved accuracy. Sending zero update.")
+    #         model.load_state_dict(original_model_state)
+    #         return torch.zeros_like(benign_update)
+
+    #     self.logger.warning("[FedOda][Craft] No harmful delta found. Returning best effort - original server model.")
+    #     model.load_state_dict(original_model_state)
+    #     return best_delta
 
 
     def mali_update_craft_l2_cos(
@@ -545,29 +718,17 @@ class FedOda:
         retry_limit=5,
         epsilon_growth=1,
         cos_growth=0.9,
+        mode="PROJ",
+        pgd_steps=20,
+        pgd_lr=0.1,
     ):
         """
-        Craft a malicious update Δₘ such that:
-            - Lies in the plane of `target_direction` and `benign_update`
-            - L2 norm ≈ epsilon (relaxed over retries)
-            - Cosine distance(Δₘ, target_direction) ≈ scaling_cos_dist (relaxed over retries)
-            - Reduces validation accuracy
-
-        If no such update is found, returns best effort or zero update if all increased accuracy.
-
-        Args:
-            model (nn.Module): Server model to attack.
-            benign_update (torch.Tensor): Benign model update.
-            target_direction (torch.Tensor): Malicious direction (unit vector).
-            scaling_cos_dist (float): Desired cosine distance from target_direction.
-            epsilon (float): L2-norm constraint.
-            harm_threshold (float): Minimum accuracy drop to consider harmful.
-            retry_limit (int): Max attempts if update is not harmful enough.
-            epsilon_growth (float): Factor to increase epsilon each retry.
-            cos_growth (float): Factor to increase cosine distance each retry.
+        Craft a malicious update Δₘ under constraints using either:
+            - PROJ: project + rescale heuristic (default)
+            - PGD: optimize for validation loss under constraints
 
         Returns:
-            torch.Tensor: Crafted malicious update Δₘ.
+            torch.Tensor: Malicious update
         """
         original_model_state = deepcopy(model.state_dict())
         original_acc = self.validate(model, self.pooled_balanced_loader)
@@ -577,32 +738,58 @@ class FedOda:
         all_acc_improving = True
 
         for attempt in range(retry_limit):
-            # === Step 1: Create direction with desired cosine distance
-            crafted_direction = self.project_to_cosine(
-                v=benign_update,
-                ref=target_direction,
-                desired_cos_dist=scaling_cos_dist
-            )
+            if mode == "PROJ":
+                # === Step 1: Project to desired cosine distance
+                crafted_direction = self.project_to_cosine(
+                    v=benign_update,
+                    ref=target_direction,
+                    desired_cos_dist=scaling_cos_dist
+                )
+                # === Step 2: Scale to L2 norm = epsilon
+                delta = crafted_direction / crafted_direction.norm() * epsilon
+            elif mode == "PGD":
+                delta = self.pgd_craft_attack_delta(
+                    model=model,
+                    target_direction=target_direction,
+                    scaling_cos_dist=scaling_cos_dist,
+                    epsilon=epsilon,
+                    steps=pgd_steps,
+                    lr=pgd_lr,
+                    device=self.device
+                )
+            else:
+                raise ValueError(f"Unknown attack mode: {mode}")
 
-            # === Step 2: Scale to L2 norm = epsilon
-            delta = crafted_direction / crafted_direction.norm() * epsilon
-
-            # === Step 3: Apply delta to model and evaluate
+            # === Step 3: Apply and validate
             attacked_model = self.apply_update_to_model(model, delta)
             new_acc = self.validate(attacked_model, self.pooled_balanced_loader)
             acc_drop = original_acc - new_acc
 
-            cos_dist = 1 - F.cosine_similarity(
-                delta.unsqueeze(0), target_direction.unsqueeze(0), dim=1
-            ).item()
+            def safe_cosine_distance(a: torch.Tensor, b: torch.Tensor, eps: float = 1e-8) -> float:
+                a_norm = a.norm()
+                b_norm = b.norm()
+                if a_norm < eps or b_norm < eps:
+                    return float("nan")
+                cos_sim = torch.dot(a, b) / (a_norm * b_norm)
+                return 1 - cos_sim.item()
+
+            cos_dist = safe_cosine_distance(delta, target_direction)
+
+            cos_dist_target = safe_cosine_distance(delta, target_direction)
+            cos_dist_benign = safe_cosine_distance(delta, benign_update)
 
             self.logger.info(
-                f"[FedOda][Craft] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+                f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, "
+                f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
             )
 
-            # === Check if this attempt is harmful enough
-            if acc_drop >= 0:
-                self.logger.info(f"[FedOda][Craft] Successful attack at attempt {attempt + 1}")
+            self.logger.info(
+                f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+            )
+
+            # === Check for successful attack
+            if acc_drop >= harm_threshold:
+                self.logger.info(f"[FedOda][Craft-{mode}] Successful attack at attempt {attempt + 1}")
                 model.load_state_dict(original_model_state)
                 return delta.detach()
 
@@ -611,25 +798,100 @@ class FedOda:
                 best_acc_drop = acc_drop
                 best_delta = delta.detach()
 
-            # If any attempt reduced accuracy, set flag
             if acc_drop < 0:
                 all_acc_improving = False
 
-            # === Step 4: Relax constraints and retry
+            # === Step 4: Relax constraints
             scaling_cos_dist *= cos_growth
             epsilon *= epsilon_growth
             model.load_state_dict(original_model_state)
 
         # === Final fallback
         if all_acc_improving:
-            self.logger.warning("[FedOda][Craft] All attempted updates improved accuracy. Sending zero update.")
+            self.logger.warning(f"[FedOda][Craft-{mode}] All updates improved accuracy. Sending zero update.")
             model.load_state_dict(original_model_state)
             return torch.zeros_like(benign_update)
 
-        self.logger.warning("[FedOda][Craft] No harmful delta found. Returning best effort - original server model.")
+        self.logger.warning(f"[FedOda][Craft-{mode}] No harmful update found. Returning best effort.")
         model.load_state_dict(original_model_state)
         return best_delta
 
+    def pgd_craft_attack_delta(
+        self,
+        model,
+        target_direction,
+        scaling_cos_dist,
+        epsilon,
+        steps=20,
+        lr=0.1,
+        device=None
+    ):
+        """
+        PGD attack update to increase validation loss under:
+            - L2 norm == ε
+            - Cosine distance >= scaling_cos_dist
+        """
+        model_flat = self.get_flat_model_params(model)
+        delta = torch.zeros_like(model_flat, requires_grad=True)
+
+        optimizer = torch.optim.SGD([delta], lr=lr)
+
+        # Normalize the target direction once
+        target_direction = target_direction / (target_direction.norm() + 1e-8)
+
+        for step in range(steps):
+            optimizer.zero_grad()
+
+            # Apply delta to model
+            model_copy = deepcopy(model)
+            self.set_flat_model_params(model_copy, model_flat + delta)
+
+            # Get one batch
+            x, y = next(iter(self.pooled_balanced_loader))
+            x, y = x.to(device), y.to(device)
+
+            model_copy.train()
+            logits = model_copy(x)
+            loss_fn = torch.nn.CrossEntropyLoss()
+            loss = loss_fn(logits, y)
+
+            (-loss).backward()
+            optimizer.step()
+
+            with torch.no_grad():
+                # === Optional: Enforce cosine constraint only if violated
+                current_cos_sim = torch.dot(delta, target_direction) / (
+                    delta.norm() * target_direction.norm() + 1e-8
+                )
+                current_cos_dist = 1 - current_cos_sim.item()
+
+                if current_cos_dist < scaling_cos_dist:
+                    # Project to desired cosine constraint
+                    delta.data = self.project_to_cosine(
+                        v=delta.data, ref=target_direction, desired_cos_dist=scaling_cos_dist
+                    )
+
+                # Rescale to exact L2 norm = epsilon
+                if delta.norm() > 1e-6:
+                    delta.data = delta.data / delta.data.norm() * epsilon
+                else:
+                    # Avoid dividing by 0
+                    delta.data = torch.randn_like(delta.data)
+                    delta.data = delta.data / delta.data.norm() * epsilon
+
+        return delta.detach()
+
+
+    def get_flat_model_params(self, model):
+        return torch.cat([p.detach().flatten() for p in model.parameters()])
+
+    def set_flat_model_params(self, model, flat_tensor):
+        pointer = 0
+        for p in model.parameters():
+            num_params = p.numel()
+            new_data = flat_tensor[pointer:pointer + num_params].view_as(p)
+            p.data.copy_(new_data)
+            pointer += num_params
 
 
     def get_cos_dist(self, delta_s, delta_b, delta_s_pred, delta_m):
@@ -696,13 +958,6 @@ class FedOda:
 
         return posterior
 
-
-
-    # def adjust_epsilon(self, epsilon, posterior):
-    #     if posterior < self.threshold:
-    #         return epsilon * self.reduce_factor
-    #     else:
-    #         return epsilon * self.increase_factor
 
 
     def adjust_scaling_factor(self, scaling_factor, exploration_prob, exploration_scale):
@@ -1457,6 +1712,50 @@ class FedOda:
                 self, mali_direction, benign_update,
                 avg_cos_distance, avg_l2_norm
             )
+        elif self.attack_mode == "PCAC":
+            malicious_update_dict, malicious_update, action, state, noise_std = pcac_attack(
+                fedoda=self,
+                mali_direction=mali_direction,
+                benign_update=benign_update,
+                avg_cos_distance=avg_cos_distance,
+                avg_l2_distance=avg_l2_distance,
+                avg_update_norm=avg_l2_norm,
+                prev_acc=acc_prev,
+                curr_acc=acc_curr
+            )
+
+            self.logger.info(
+                f"[FedOda] PCAC noise_std: {noise_std:.4f}, "
+                f"action: {[f'{float(x):.4f}' for x in action]}, "
+                f"state: {[f'{float(x):.4f}' for x in state]}"
+            )
+
+            if self.prev_acc is not None:
+                r1 = 1.0 - acc_curr
+                r2 = (self.prev_acc - acc_curr) / 0.2
+                r3 = 0
+                reward_vector = [r1, r2]
+                reward_scalar = np.dot(reward_vector, self.pcac_preference_vector.numpy())
+
+                self.pcac_agent.store_transition(
+                    s=self.prev_state,
+                    a=self.prev_action,
+                    r=reward_vector,
+                    s_next=state,
+                    preference_vector=self.pcac_preference_vector
+                )
+                self.pcac_agent.update()
+            else:
+                # First iteration: can't compute rewards that depend on prev_acc
+                r1 = 0.0
+                r2 = 0.0
+                r3 = 0.0
+                reward_scalar = 0.0
+            self.prev_state = state
+            self.prev_action = action
+            self.prev_acc = acc_curr
+
+            
         elif self.attack_mode == "MOQ":
             malicious_update_dict, malicious_update, action, state = moq_attack(
                 fedoda=self,
@@ -1661,8 +1960,8 @@ class FedOda:
             model_cos_delta=None,
             model_cos_b_b=avg_full_model_cos,
             posterior=None,
-            norm_scaling_l2=action[0].item(),
-            norm_scaling_cos=action[1].item(),
+            norm_scaling_l2=float(action[0]),
+            norm_scaling_cos=float(action[1]),
             mapped_scaling_l2=self.scaling_l2,
             mapped_scaling_cos=self.scaling_cos,
         )

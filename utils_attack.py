@@ -10,6 +10,13 @@ def flatten_model(state_dict):
     return torch.cat([p.view(-1).float() for p in state_dict.values() if isinstance(p, torch.Tensor)])
 
 
+def get_model_l2_norm(model):
+    total_norm = 0.0
+    with torch.no_grad():
+        for param in model.state_dict().values():
+            total_norm += torch.norm(param.float(), p=2).item() ** 2
+    return total_norm ** 0.5
+
 def vector_to_state_dict(vector, model):
     ref_sd = model.state_dict()
     new_sd = {}
