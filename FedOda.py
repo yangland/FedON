@@ -824,17 +824,26 @@ class FedOda:
         epsilon,
         steps=20,
         lr=0.1,
-        device=None
+        device=None,
+        warm_start_delta=None,  # Optional: start from another delta, e.g. PROJ
+        log_interval=5
     ):
         """
         PGD attack update to increase validation loss under:
             - L2 norm == ε
             - Cosine distance >= scaling_cos_dist
         """
-        model_flat = self.get_flat_model_params(model)
-        delta = torch.zeros_like(model_flat, requires_grad=True)
 
-        optimizer = torch.optim.SGD([delta], lr=lr)
+        model_flat = self.get_flat_model_params(model)
+
+        # === Init delta ===
+        if warm_start_delta is not None:
+            delta = warm_start_delta.clone().detach().to(device)
+        else:
+            delta = torch.zeros_like(model_flat, device=device)
+
+        delta.requires_grad_()
+        optimizer = torch.optim.Adam([delta], lr=lr)
 
         # Normalize the target direction once
         target_direction = target_direction / (target_direction.norm() + 1e-8)
@@ -842,44 +851,63 @@ class FedOda:
         for step in range(steps):
             optimizer.zero_grad()
 
-            # Apply delta to model
+            # Apply delta to a copy of the model
             model_copy = deepcopy(model)
             self.set_flat_model_params(model_copy, model_flat + delta)
 
-            # Get one batch
-            x, y = next(iter(self.pooled_balanced_loader))
-            x, y = x.to(device), y.to(device)
-
-            model_copy.train()
-            logits = model_copy(x)
+            # === Use multiple batches to compute average validation loss ===
+            loss = 0.0
+            num_batches = 0
             loss_fn = torch.nn.CrossEntropyLoss()
-            loss = loss_fn(logits, y)
 
+            for i, (x, y) in enumerate(self.pooled_balanced_loader):
+                x, y = x.to(device), y.to(device)
+                model_copy.train()
+                logits = model_copy(x)
+                loss += loss_fn(logits, y)
+                num_batches += 1
+                if num_batches >= 3:  # Use only a few batches for speed
+                    break
+
+            loss /= num_batches
             (-loss).backward()
             optimizer.step()
 
             with torch.no_grad():
-                # === Optional: Enforce cosine constraint only if violated
+                # === Enforce cosine constraint only if needed ===
                 current_cos_sim = torch.dot(delta, target_direction) / (
                     delta.norm() * target_direction.norm() + 1e-8
                 )
                 current_cos_dist = 1 - current_cos_sim.item()
 
                 if current_cos_dist < scaling_cos_dist:
-                    # Project to desired cosine constraint
                     delta.data = self.project_to_cosine(
-                        v=delta.data, ref=target_direction, desired_cos_dist=scaling_cos_dist
+                        v=delta.data,
+                        ref=target_direction,
+                        desired_cos_dist=scaling_cos_dist
                     )
 
-                # Rescale to exact L2 norm = epsilon
+                # === Enforce exact L2 norm ===
                 if delta.norm() > 1e-6:
                     delta.data = delta.data / delta.data.norm() * epsilon
                 else:
-                    # Avoid dividing by 0
                     delta.data = torch.randn_like(delta.data)
                     delta.data = delta.data / delta.data.norm() * epsilon
 
+            # === Logging for debugging ===
+            if (step + 1) % log_interval == 0 or step == 0 or step == steps - 1:
+                final_cos_sim = torch.dot(delta, target_direction) / (
+                    delta.norm() * target_direction.norm() + 1e-8
+                )
+                final_cos_dist = 1 - final_cos_sim.item()
+                self.logger.info(
+                    f"[PGD Step {step+1}/{steps}] Loss = {loss.item():.4f}, "
+                    f"||Δ|| = {delta.norm().item():.4f}, "
+                    f"CosDist(Δ~target) = {final_cos_dist:.4f}"
+                )
+
         return delta.detach()
+
 
 
     def get_flat_model_params(self, model):
