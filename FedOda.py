@@ -94,9 +94,10 @@ class FedOda:
         if self.attack_mode == "PCAC":
             self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
             self.pcac_agent = PCACAgent(
-                state_dim=3,     # same as MOQ
+                state_dim=4,     # same as MOQ
                 action_dim=2,    # norm_scaling_l2, norm_scaling_cos
                 reward_dim=2,    # r1, r2
+                preference=[0.3, 0.7],
                 device=self.device,
                 logger=logger
             )
@@ -1541,7 +1542,7 @@ class FedOda:
             return {}, {}
 
         # === Proceed with regular attack
-        return self._regular_attack(sample_num, batch_size, mco_dict, c_epochs)
+        return self._regular_attack(sample_num, batch_size, mco_dict, c_epochs, round_number)
 
 
 
@@ -1684,7 +1685,7 @@ class FedOda:
         )
 
 
-    def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs):
+    def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs, round_number):
         # Step1. perform analysis
         self.logger.info("[FedOda] Step 1: Computing best attack direction (g_m)")
         g_m_dict, g_m = self.get_attack_direction(model=self.server_model,
@@ -1749,7 +1750,8 @@ class FedOda:
                 avg_l2_distance=avg_l2_distance,
                 avg_update_norm=avg_l2_norm,
                 prev_acc=acc_prev,
-                curr_acc=acc_curr
+                curr_acc=acc_curr,
+                iteration=round_number
             )
 
             self.logger.info(
@@ -1759,11 +1761,31 @@ class FedOda:
             )
 
             if self.prev_acc is not None:
-                r1 = 1.0 - acc_curr
-                r2 = (self.prev_acc - acc_curr) / 0.2
-                r3 = 0
+                # --- Compute reward components ---
+                r1 = 1.0 - acc_curr                              # Encourage lower accuracy (attack success)
+                r2 = (self.prev_acc - acc_curr) / 0.2            # Relative drop in accuracy, normalized
+                r2 = np.clip(r2, -1.0, 1.0)                      # Prevent extreme values
+                r3=0
+                
                 reward_vector = [r1, r2]
-                reward_scalar = np.dot(reward_vector, self.pcac_preference_vector.numpy())
+                preference_vector = self.pcac_preference_vector.cpu().numpy()
+
+                # --- Compute scalar reward ---
+                reward_scalar = np.dot(reward_vector, preference_vector)
+
+                # --- Normalize reward for stability (optional scale-up) ---
+                reward_scalar = np.clip(reward_scalar * 2.0, 0.0, 1.0)  # Scale and clamp to [0, 1]
+
+                # --- Update noise_std based on reward ---
+                self.pcac_agent.update_noise_std(reward_scalar)
+                self.pcac_agent.update_epsilon()
+
+                # --- Log for debugging ---
+                self.logger.info(
+                    f"[PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
+                    f"preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
+                )
+
 
                 self.pcac_agent.store_transition(
                     s=self.prev_state,

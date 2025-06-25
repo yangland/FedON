@@ -1,10 +1,10 @@
-cuda_device: 4
+cuda_device: 1
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "multi-krum" # "multi-krum", "fedavg", "fltrust"
+aggr: "flame" # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 0.5 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True

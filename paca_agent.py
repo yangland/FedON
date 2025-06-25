@@ -5,23 +5,35 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import random
-
+import torch.nn.functional as F
 
 class PCACActor(nn.Module):
     def __init__(self, state_dim, pref_dim, action_dim):
         super(PCACActor, self).__init__()
-        self.net = nn.Sequential(
+        assert action_dim == 2, "This design assumes 2 actions: [L2, cosine]."
+        
+        self.shared = nn.Sequential(
             nn.Linear(state_dim + pref_dim, 128),
             nn.ReLU(),
             nn.Linear(128, 64),
             nn.ReLU(),
-            nn.Linear(64, action_dim),
-            nn.Tanh()  # Output in [-1, 1]
         )
+        
+        # Separate output layers for each action
+        self.out_l2 = nn.Linear(64, 1)     # Action[0]
+        self.out_cos = nn.Linear(64, 1)    # Action[1]
 
     def forward(self, state, preference):
-        x = torch.cat([state, preference], dim=-1)
-        return self.net(x)
+        x = torch.cat([state, preference], dim=-1)  # shape: [batch_size, state_dim + pref_dim]
+        features = self.shared(x)  # shape: [batch_size, 64]
+
+        # Apply separate activations
+        a0 = torch.tanh(self.out_l2(features))      # [-1, 1]
+        a1 = torch.sigmoid(self.out_cos(features))  # [0, 1]
+
+        action = torch.cat([a0, a1], dim=-1)        # shape: [batch_size, 2]
+        return action
+
 
 
 class PCACCritic(nn.Module):
@@ -41,7 +53,7 @@ class PCACCritic(nn.Module):
 
 
 class PCACAgent:
-    def __init__(self, state_dim, action_dim, reward_dim, device='cpu', lr=1e-3, gamma=0.99, logger=None):
+    def __init__(self, state_dim, action_dim, reward_dim, preference, device='cpu', lr=1e-3, gamma=0.99, logger=None):
         self.device = device
         self.gamma = gamma
         self.reward_dim = reward_dim
@@ -55,15 +67,91 @@ class PCACAgent:
 
         self.memory = []  # Simple replay buffer
         self.batch_size = 32
+        
+        self.reward_ema = 0.0
+        self.noise_std = 0.2  # starts high
+        self.exploration_mode = 'noise'     # or 'epsilon'
+        self.alpha = 0.1      # smoothing factor for EMA
+        self.epsilon = 1.0          # Start with full exploration
+        self.epsilon_min = 0.05     # Minimum ε (explore at least a little)
+        self.epsilon_decay = 0.995  # Decay rate per training step (or episode)
 
-    def select_action(self, state_tensor, preference_vector, noise_std=0.05):
-        state_tensor = state_tensor.unsqueeze(0).to(self.device)  # [1, state_dim]
-        preference_vector = preference_vector.unsqueeze(0).to(self.device)  # [1, reward_dim]
+        # if preference is None:
+        #     preference = [0.5] * reward_dim
+        # else:
+        #     self.preference = preference
+        # self.preference = torch.tensor(preference, dtype=torch.float32).to(device)
+
+    def update_noise_std(self, reward_scalar):
+        if self.exploration_mode == 'noise':
+            """
+            Update exploration noise based on reward feedback.
+            If reward improves → reduce noise (exploit more)
+            If reward worsens → increase noise (explore more)
+            """
+            # Normalize reward to [0, 1] for stability (optional)
+            reward_scalar = float(reward_scalar)
+            reward_scalar = np.clip(reward_scalar, 0.0, 1.0)
+
+            # Update EMA of recent rewards
+            self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
+
+            # Compute delta
+            delta = reward_scalar - self.reward_ema
+
+            # Adjust noise_std based on delta
+            if delta > 0:
+                # Reward better than expected → decrease noise
+                self.noise_std = max(0.05, self.noise_std * 0.9)
+            else:
+                # Reward worse than expected → increase noise
+                self.noise_std = min(0.4, self.noise_std * 1.1)
+
+
+    def select_action(self, state_tensor, preference_vector):
+        state_tensor = state_tensor.unsqueeze(0).to(self.device)
+        preference_vector = preference_vector.unsqueeze(0).to(self.device)
+
         with torch.no_grad():
-            action = self.actor(state_tensor, preference_vector).squeeze(0)
-        # Add exploration noise
-        action += torch.randn_like(action) * noise_std
-        return torch.clamp(action, -1.0, 1.0)
+            actor_output = self.actor(state_tensor, preference_vector).squeeze(0)
+
+        if self.exploration_mode == 'noise':
+            # Add Gaussian noise to actor output
+            noisy_action = actor_output + torch.randn_like(actor_output) * self.noise_std
+
+            # Clamp to valid range
+            noisy_action[0] = torch.clamp(noisy_action[0], -1.0, 1.0)
+            noisy_action[1] = torch.clamp(noisy_action[1], 0.0, 1.0)
+
+            print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
+            print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
+
+            return noisy_action
+
+        elif self.exploration_mode == 'epsilon':
+            if random.random() < self.epsilon:
+                # Fully random action
+                random_action = torch.zeros(2).to(self.device)
+                random_action[0] = torch.FloatTensor(1).uniform_(-1.0, 1.0).to(self.device)
+                random_action[1] = torch.FloatTensor(1).uniform_(0.0, 1.0).to(self.device)
+
+                print(f"[PCAC] random_action (ε={self.epsilon:.4f}): {random_action.cpu().numpy()}")
+                return random_action
+            else:
+                # Use actor output
+                actor_output[0] = torch.clamp(actor_output[0], -1.0, 1.0)
+                actor_output[1] = torch.clamp(actor_output[1], 0.0, 1.0)
+
+                print(f"[PCAC] actor_output (ε={self.epsilon:.4f}): {actor_output.cpu().numpy()}")
+                return actor_output
+
+        else:
+            raise ValueError(f"Unknown exploration_mode: {self.exploration_mode}")
+
+
+    def update_epsilon(self):
+        if self.exploration_mode == 'epsilon':
+            self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     def store_transition(self, s, a, r, s_next, preference_vector):
         self.memory.append((s, a, r, s_next, preference_vector))

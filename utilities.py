@@ -206,93 +206,65 @@ def training_csv_logging(iter, clients_eval_dict, sr_index, related_candidate_me
     
     reso_csv.append_save_csv([iter] + list(avg_resos))
     
-    
-def lie_attack_old(malicious_client_ids, mco_dict, model_type, Z_max):
-    # based on paper: A little is enough: circumventing defenses for distributed learnin
-    # https://dl.acm.org/doi/10.5555/3454287.3455062
-    # attack method from a little is enough
-    # average the malicious clients as mean
-    # supporter 20/2 + 1 - 4 = 7
-    # Z_max, (20-4-7)/(20-4) = 0.5627 -> Z table 0.16
-    # minus Z_max * std from mean
 
-    malicious_models = {
-            client_id: mco_dict[client_id][model_type].state_dict() 
-            for client_id in malicious_client_ids
-        }
-    mean = fedavg(malicious_models)  # Must return a state_dict
-    attacked_sd = {}
-        
-    with torch.no_grad():
-        for layer_name, param in malicious_models[malicious_client_ids[0]].items():
-            if layer_name.endswith('num_batches_tracked'):
-                # Preserve as-is
-                attacked_sd[layer_name] = malicious_models[malicious_client_ids[0]][layer_name].clone()
-                continue
 
-            # Stack values across malicious clients
-            layer_values = [malicious_models[client_id][layer_name].float()
-                            for client_id in malicious_client_ids]
-            stacked = torch.stack(layer_values)
-            std = torch.std(stacked, dim=0, correction=0)
-            attacked_value = mean[layer_name].float() - Z_max * std
-
-            # Ensure same dtype and shape
-            attacked_sd[layer_name] = attacked_value.to(param.dtype)
-
-    return attacked_sd
-
-def lie_attack(malicious_client_ids, mco_dict, model_type, malicious_fraction):
+def lie_attack(malicious_client_ids, mco_dict, model_sd_before, model_type, malicious_fraction, device):
     """
     Perform the LIE attack based on global malicious client percentage.
-    
+
     Args:
         malicious_client_ids: List of malicious client IDs in current round
         mco_dict: Dictionary containing client models in current round
+        model_sd_before: The global model state_dict before the round
         model_type: Type of model to attack
         malicious_fraction: Global percentage of malicious workers (0-1)
+        device: Torch device
+    Returns:
+        attacked_sd: A new state_dict with the malicious update applied
     """
-    # Calculate Z_max based on global malicious percentage
-    # Calculate needed supporters using formula: (total/2 + 1) - malicious_count
-    # Here we use the global malicious percentage to compute expected behavior
-    # For the calculation, we assume the same ratio holds in the selected clients
-
-    total = 100
+    total = 100  # Arbitrary reference total clients
     mali_num = int(total * malicious_fraction)
-    supporters_needed = int(total/2 + 1) - mali_num
-    phi_z = (total - mali_num - supporters_needed)/(total - mali_num)
-    
-    # Get Z_max from normal distribution inverse CDF
+    supporters_needed = int(total / 2 + 1) - mali_num
+    phi_z = (total - mali_num - supporters_needed) / (total - mali_num)
+
     try:
         Z_max = abs(norm.ppf(phi_z))
     except:
-        # Fallback values
-        Z_max = 1.43  # Default value from paper example
-    
-    logger.info(f"[LIE] based on malicious_fraction: {malicious_fraction}, Z_max: {Z_max:.4f}")
-    
-    # Get the first malicious model to access its named_parameters
-    model = mco_dict[malicious_client_ids[0]][model_type]
-    attacked_sd = model.state_dict()  # Start with original state
-    
-    with torch.no_grad():
-        # Get mean and std across all malicious models for each parameter
-        param_stats = {}
-        for name, param in model.named_parameters():
-            # Stack this parameter from all malicious models
-            param_values = [mco_dict[client_id][model_type].state_dict()[name].float() 
-                          for client_id in malicious_client_ids]
-            stacked = torch.stack(param_values)
-            param_stats[name] = {
-                'mean': torch.mean(stacked, dim=0),
-                'std': torch.std(stacked, dim=0, correction=0)
-            }
+        Z_max = 1.43  # Default fallback from LIE paper
 
-        # Apply attack only to trainable parameters
-        for name, param in model.named_parameters():
-            stats = param_stats[name]
-            attacked_value = stats['mean'] - Z_max * stats['std']
-            attacked_sd[name] = attacked_value.to(param.dtype)
+    logger.info(f"[LIE] based on malicious_fraction: {malicious_fraction}, Z_max: {Z_max:.4f}")
+
+    # Get the parameter names and shapes from the model once
+    model = mco_dict[malicious_client_ids[0]][model_type]
+
+    # Collect parameter stats from malicious clients
+    param_stats = {}
+    for name, param in model.named_parameters():
+        param_values = [mco_dict[client_id][model_type].state_dict()[name].float().to(device)
+                        for client_id in malicious_client_ids]
+        stacked = torch.stack(param_values)
+        param_stats[name] = {
+            'mean': stacked.mean(dim=0),
+            'std': stacked.std(dim=0, correction=0)
+        }
+
+    # Build malicious gradient vector
+    mal_update_flat = []
+    for name, param in model.named_parameters():
+        stats = param_stats[name]
+        attacked_value = stats['mean'] - Z_max * stats['std']
+        # Compute gradient: delta = attacked_param - global_param
+        delta = attacked_value - model_sd_before[name].to(device)
+        mal_update_flat.append(delta.flatten())
+
+    mal_update = torch.cat(mal_update_flat)
+
+    # Use the safe gradient update function
+    attacked_sd = update_model_with_malicious_gradient(
+        state_dict=model_sd_before,
+        server_state=model_sd_before,
+        mal_update=mal_update
+    )
 
     return attacked_sd
 
@@ -381,16 +353,18 @@ def update_model_with_malicious_gradient(state_dict, server_state, mal_update):
     idx = 0
 
     for name in state_dict:
-        if name.endswith('num_batches_tracked'):
-            new_state_dict[name] = server_state[name]  # Keep as-is
+        if name.endswith('num_batches_tracked') or 'running_mean' in name or 'running_var' in name:
+            # These are buffers, not weights — do not update via gradient
+            new_state_dict[name] = server_state[name]
             continue
 
         numel = state_dict[name].numel()
         user_grad = mal_update[idx:idx + numel].reshape(state_dict[name].shape)
         new_state_dict[name] = server_state[name] + user_grad
-        idx += numel  # Only increment idx for used gradients
+        idx += numel
 
     return new_state_dict
+
 
 
 
