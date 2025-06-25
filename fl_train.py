@@ -63,6 +63,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         dirichlet_alpha = params['dirichlet_alpha']
     except:
         dirichlet_alpha = None
+    try:
+        rl_mode = params['rl_mode']
+    except:
+        rl_mode = "PCAC"
         
     attack_method = params['attack_method']
     
@@ -265,6 +269,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     client_learning_rate=c_lr,
                     client_data_size=mali_client_data_size,
                     client_batch_size=client_batch_size,
+                    attack_mode= rl_mode,
                     logger=logger)
     else:
         foda = None

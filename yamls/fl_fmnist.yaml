@@ -1,10 +1,10 @@
-cuda_device: 3
+cuda_device: 5
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "multi-krum" # "multi-krum", "fedavg", "fltrust"
+aggr: "flame" # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 1 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
@@ -31,7 +31,7 @@ attack_method: 'FedOda'
 
 image_size: [1, 28, 28]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.001
+c_lr: 0.0001
 c_momentum: 0.9
 client_batch_size: 64
 
@@ -50,5 +50,6 @@ fedoda:
   increase_factor: 1.01
   threshold: 0.6
 
+rl_mode: "RANDOM"
 
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"

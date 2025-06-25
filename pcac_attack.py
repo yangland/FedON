@@ -16,6 +16,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     
     acc_delta = curr_acc - prev_acc
     model_norm_delta = 0.0
+    cos_dist_rate = 1.0
     if fedoda.prev_server_model is not None:
         prev_model_norm = get_model_l2_norm(fedoda.prev_server_model)
         curr_model_norm = get_model_l2_norm(fedoda.server_model)

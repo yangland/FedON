@@ -26,7 +26,7 @@ class FedOda:
                  malicious_client_ids, fl_mali_data_dict, E=5, scaling_l2=8,
                  reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
-                 logger=None):
+                 attack_mode="PCAC", logger=None):
         self.model_fn = model_fn
         self.device = device
         self.E = E # Number of rounds to consider for history
@@ -1741,6 +1741,20 @@ class FedOda:
                 self, mali_direction, benign_update,
                 avg_cos_distance, avg_l2_norm
             )
+        elif self.attack_model == "RANDOM":
+            cos_dist_mali_benign = 1 - F.cosine_similarity(
+                        mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
+                        ).item()
+            malicious_update_dict, malicious_update, action, state, noise_std = self.random_base_attack(
+                            fedoda=self,
+                            mali_direction=mali_direction,
+                            benign_update=benign_update,
+                            avg_cos_distance=avg_cos_distance,
+                            avg_l2_distance=avg_l2_distance,
+                            avg_update_norm=avg_l2_norm,
+                            cos_dist_mali_benign=cos_dist_mali_benign,
+                            round_number=round_number
+                        )
         elif self.attack_mode == "PCAC":
             malicious_update_dict, malicious_update, action, state, noise_std = pcac_attack(
                 fedoda=self,
@@ -2024,3 +2038,70 @@ class FedOda:
         self.prev_malicious_update = malicious_update.clone().detach()
 
         return malicious_update_dict, malicious_update
+    
+
+
+    def random_base_attack(self,
+        mali_direction,
+        benign_update,
+        avg_cos_distance,
+        avg_l2_distance,
+        avg_update_norm,
+        cos_dist_mali_benign,
+        round_number
+    ):
+        """
+        Perform a baseline PCAC-style attack using randomly sampled L2 and cosine constraints.
+
+        Args:
+            fedoda: The attacker object (must have .mali_update_craft_l2_cos method and .logger)
+            mali_direction: Direction vector for malicious update
+            benign_update: Average benign update to mimic
+            avg_cos_distance: Average cosine distance between benign updates
+            avg_l2_distance: Average L2 distance between benign updates
+            avg_update_norm: Average L2 norm of benign updates
+            cos_dist_mali_benign: Cosine distance between malicious and benign updates
+            round_number: Current training round number
+
+        Returns:
+            malicious_update_dict: Dict form of crafted malicious model update
+            malicious_update: Flattened malicious update tensor
+            action: Sampled action vector [L2_scale, Cos_bound]
+            state: Dummy state (zeros)
+            noise_std: Standard deviation of noise added in crafting
+        """
+        # ----> Sample random L2 scaling in [0.5, 20.0]
+        scaling_l2 = np.random.uniform(0.5, 20.0)
+        self.epsilon = scaling_l2 * avg_update_norm
+
+        # ----> Sample cosine upper bound in [0, cos_dist_mali_benign - avg_cos_distance / 2]
+        cos_ub = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance / 2))
+        scaling_cos = np.random.uniform(0.0, cos_ub)
+
+        # Combine into action vector
+        action = np.array([scaling_l2, scaling_cos])
+
+        self.logger.info(
+            f"[random_base] Round {round_number} | Sampled Action -> L2: {scaling_l2:.4f}, Cos: {scaling_cos:.4f}"
+        )
+
+        # ----> Craft malicious update using the same method as PCAC
+        malicious_update_dict, malicious_update, noise_std = self.mali_update_craft_l2_cos(
+            model=self.server_model,
+            benign_update=benign_update,
+            target_direction=mali_direction,
+            scaling_cos_dist=scaling_cos,
+            epsilon=self.epsilon,
+            harm_threshold=0.0,
+            retry_limit=5,
+            epsilon_growth=1.0,
+            cos_growth=0.9,
+            mode="PROJ",
+            pgd_steps=20,
+            pgd_lr=0.05
+        )
+
+        # Dummy state (zeros), for consistency with RL methods
+        state = np.zeros(self.state_dim) if hasattr(self, 'state_dim') else None
+
+        return malicious_update_dict, malicious_update, action, state, noise_std
