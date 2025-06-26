@@ -53,7 +53,7 @@ class PCACCritic(nn.Module):
 
 
 class PCACAgent:
-    def __init__(self, state_dim, action_dim, reward_dim, preference, device='cpu', lr=1e-3, gamma=0.99, logger=None):
+    def __init__(self, state_dim, action_dim, reward_dim, device='cpu', lr=1e-3, gamma=0.99, logger=None):
         self.device = device
         self.gamma = gamma
         self.reward_dim = reward_dim

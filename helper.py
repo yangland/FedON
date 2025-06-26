@@ -35,6 +35,8 @@ from models.model_utils import get_model
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
+from collections import OrderedDict
+
 
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, dba_poisoning_per_batch=0.2, 
@@ -868,39 +870,61 @@ def fl_validation(model, criterion, fl_test, server_batch_size, class_num, attac
     return test_loss, accuracy, per_class_accuracy, attack_success_rate
 
 
+
+
 def grad_add_to_model(model, lr, grad, update_bn_buffers=True, update_batched_tracked=True):
     """
-    Add gradients to model parameters with learning rate
-    
+    Safely add gradients to model parameters with learning rate.
+
     Args:
         model: Model to update
         lr: Learning rate
         grad: Gradient dictionary
         update_bn_buffers: Whether to update BatchNorm buffers (running_mean/var)
-                          num_batches_tracked is never updated
+        update_batched_tracked: Whether to update num_batches_tracked
     """
     model_sd = model.state_dict()
-    bn_buffer_keys = ['running_mean', 'running_var', 'num_batches_tracked']
-    
-    for key in model_sd:
-        if key not in grad:
-            continue
-            
-        # Skip num_batches_tracked always
-        if 'num_batches_tracked' in key:
-            if not update_batched_tracked:
-                continue
-            
-        # Handle BN buffers according to flag
-        if any(buf in key for buf in ['running_mean', 'running_var']):
-            if not update_bn_buffers:
-                continue
-                
-        if isinstance(grad[key], torch.Tensor):
-            grad_to_add = (lr * grad[key].to(model_sd[key].device)).to(model_sd[key].dtype)
-            model_sd[key] = (model_sd[key] + grad_to_add).to(model_sd[key].dtype)
+    updated_sd = OrderedDict()
 
-    model.load_state_dict(model_sd)
+    for key in model_sd:
+        # Default: copy existing value
+        updated_value = model_sd[key]
+
+        # Skip if gradient is missing
+        if key not in grad:
+            updated_sd[key] = updated_value
+            continue
+
+        # Skip if NaN in gradient
+        if torch.isnan(grad[key]).any():
+            print(f"[grad_add_to_model] NaN detected in gradient for key: {key}. Skipping this key.")
+            updated_sd[key] = updated_value
+            continue
+
+        # Skip BN tracking buffer unless allowed
+        if 'num_batches_tracked' in key and not update_batched_tracked:
+            updated_sd[key] = updated_value
+            continue
+
+        # Skip BN running_mean/var unless allowed
+        if any(buf in key for buf in ['running_mean', 'running_var']) and not update_bn_buffers:
+            updated_sd[key] = updated_value
+            continue
+
+        # Apply gradient update
+        if isinstance(grad[key], torch.Tensor):
+            try:
+                grad_to_add = (lr * grad[key].to(updated_value.device)).to(updated_value.dtype)
+                updated_sd[key] = (updated_value + grad_to_add).to(updated_value.dtype)
+            except Exception as e:
+                print(f"[grad_add_to_model] Exception updating key {key}: {e}")
+                updated_sd[key] = updated_value
+        else:
+            updated_sd[key] = updated_value
+
+    # Once all updates are complete, load them into the model
+    model.load_state_dict(updated_sd)
+
 
 
 def weight_to_model(model, weight):

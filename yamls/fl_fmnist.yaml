@@ -1,10 +1,10 @@
-cuda_device: 5
+cuda_device: 2
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "flame" # "multi-krum", "fedavg", "fltrust"
+aggr: "coordinate_wise_median" # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 1 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
@@ -21,7 +21,7 @@ m: 30 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
-c_model: "ConvNet" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
+c_model: "SimpleCNN_28" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.2
 # '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
@@ -35,7 +35,7 @@ c_lr: 0.0001
 c_momentum: 0.9
 client_batch_size: 64
 
-fl_iter_num: 200
+fl_iter_num: 140
 server_optim_c_lr: 0.005
 server_batch_size: 64
 server_c_epochs: 1

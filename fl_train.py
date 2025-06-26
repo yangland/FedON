@@ -530,14 +530,6 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         print("Elapsed Time this round:", "{:.2f} sec".format(time.time() - t1))
         logger.info(f"exp total running time: {datetime.timedelta(seconds=(time.time() - t0))}")
         
-        # if iter % 10 == 0:
-        #     logger.info(f"every 10 iterations, normalize server model weights")
-        #     # normalize server model weights
-        #     mco_dict[-1]["c_model"].load_state_dict(
-        #                 soft_clip_weights(mco_dict[-1]["c_model"].state_dict(), clip_threshold=5.0)
-        #             )
-        
-        # send main to all clients
         mco_dict = send_main_to_clients(client_num, mco_dict, device=device)
         
         # periodic GPU memory cleanup
@@ -634,17 +626,6 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             # print("DEBUG: mapped_scaling_l2 values:", fedoda_metrics.get("mapped_scaling_l2", "MISSING"))      
             
             def try_get(key): return fedoda_metrics.get(key, [])
-            
-            # Group 1: s_b and s_hat
-            # plot_multi_curves(
-            #     {
-            #         "$s_b$ (estimated benign clients)": try_get("s_b"),
-            #         "$\hat{s}$ (estimated total clients)": try_get("s_hat")
-            #     },
-            #     title="Estimated Client Selection",
-            #     filename="clients_estimation",
-            #     save_dir=plots_dir
-            # )
 
             # Group 2: benign_norm and server_update_norm
             plot_multi_curves(
@@ -656,54 +637,6 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
                 filename="norm_comparison",
                 save_dir=plots_dir
             )
-
-            # Group 3: Cosine distances
-            # plot_multi_curves(
-            #     {
-            #         "cos_d(Δs, Δb')": try_get("cos_d1"),
-            #         "cos_d(Δs, Δs')": try_get("cos_d2"),
-            #         "cos_d(Δs, Δm)": try_get("cos_d3"),
-            #         "cos_d(Δb', Δm)": try_get("cos_d4"),
-            #     },
-            #     title="Cosine Distances",
-            #     filename="cosine_distances",
-            #     save_dir=plots_dir
-            # )
-
-            # Group 4: L2 distances
-            # plot_multi_curves(
-            #     {
-            #         "L2(Δs, Δb')": try_get("l2_d1"),
-            #         "L2(Δs, Δs')": try_get("l2_d2"),
-            #         "L2(Δs, Δm)": try_get("l2_d3"),
-            #         "L2(Δb', Δm)": try_get("l2_d4"),
-            #     },
-            #     title="L2 Distances",
-            #     filename="l2_distances",
-            #     save_dir=plots_dir
-            # )
-
-            # Group 5: mean log-likelihood and posterior
-            # plot_twin_curves(
-            #     {
-            #         "Mean Log-Likelihood": try_get("mean_log_likelihood"),
-            #         "Posterior P(H1|D)": try_get("posterior")
-            #     },
-            #     title="Bayesian Inference Metrics",
-            #     filename="bayesian_inference",
-            #     save_dir=plots_dir,
-            # )
-
-
-            # plot_twin_curves(
-            #     {
-            #         "scaling_factor": try_get("scaling_factor"),
-            #         "Posterior P(H1|D)": try_get("posterior")
-            #     },
-            #     title="Scaling_factor vs posterior",
-            #     filename="scalling_factor",
-            #     save_dir=plots_dir,
-            # )
 
             plot_multi_curves(
                 {

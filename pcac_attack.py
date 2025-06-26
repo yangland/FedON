@@ -23,8 +23,8 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
         model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm) / prev_model_norm))
 
         cos_dist_rate = cos_dist_mali_benign / (avg_cos_distance + 1e-8)
-
-    state = [curr_acc, acc_delta, model_norm_delta, cos_dist_rate]
+ 
+    state = [curr_acc, acc_delta,  cos_dist_rate] # model_norm_delta,
     state_tensor = torch.tensor(state, dtype=torch.float32).to(agent.device)
 
 
