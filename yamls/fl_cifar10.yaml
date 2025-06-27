@@ -1,10 +1,10 @@
-cuda_device: 1
+cuda_device: 6
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "flame" # "multi-krum", "fedavg", "fltrust"
+aggr: "fedavg" # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 0.5 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
@@ -27,7 +27,7 @@ noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.5
 # '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
 # 'clear_label_backdoor', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'dba', 'FedOda']
-attack_method: 'FedOda'
+attack_method: 'LIE'
 
 
 image_size: [3, 32, 32]

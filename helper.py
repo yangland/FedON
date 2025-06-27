@@ -184,7 +184,12 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
             )
         elif attack_method == 'LIE':
             # logger.info("Applying LIE attack")
-            c_grad_dict[client_id] = lie_attack(malicious_client_ids, mco_dict, model_type="c_model", malicious_fraction = malicious_fraction)
+            c_grad_dict[client_id] = lie_attack(malicious_client_ids, 
+                                                mco_dict, 
+                                                c_sd_before[client_id],
+                                                model_type="c_model", 
+                                                malicious_fraction = malicious_fraction, 
+                                                device=device)
         elif attack_method == 'fang':
             # logger.info("Applying fang attack")
             c_grad_dict[client_id] = fang_attack(malicious_client_ids, mco_dict, c_sd_before[client_id], model_type="c_model", device=device)
