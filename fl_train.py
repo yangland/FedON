@@ -453,12 +453,26 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                 logger.error(f"[ERROR] Iter {iter} - NaN in c_grad. Skipping update.")
 
             
-            # Update the models in mco_dict directly
+            # Step 1: Apply gradient update WITHOUT BN buffer updates
             grad_add_to_model(mco_dict[-1]["c_model"], 
-                              aggr_c_lr, 
-                              c_grad,
-                              update_bn_buffers=True, 
-                              update_batched_tracked=True)  # false and false for ResNet       
+                            aggr_c_lr, 
+                            c_grad,
+                            update_bn_buffers=False, 
+                            update_batched_tracked=False)
+
+            # Step 2: Robustly aggregate BN buffers from clients
+            client_models = [mco_dict[i]["c_model"] for i in range(len(mco_dict) - 1)]
+            global_model = mco_dict[-1]["c_model"]
+            global_state = global_model.state_dict()
+
+            for name, buffer in global_model.named_buffers():
+                if "running_mean" in name or "running_var" in name or "num_batches_tracked" in name:
+                    try:
+                        agg_buf = robust_aggregate_bn_buffers(name, client_models, agg_fn="median")
+                        global_state[name].copy_(agg_buf.to(global_state[name].device))
+                    except Exception as e:
+                        print(f"[BN Aggregation] Failed to aggregate {name}: {e}")
+
         
             # check nan
             if has_nan_state_dict(mco_dict[-1]["c_model"].state_dict()):

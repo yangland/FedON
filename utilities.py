@@ -127,36 +127,6 @@ def label_mapping(input_tensor, class_label_list, reverse=False):
         output.append(t_i)
     return torch.tensor(output)
 
-# def geometric_median(X, eps=1e-5):
-#     X = X.cpu().detach().numpy()
-#     y = np.mean(X, 0)
-
-#     while True:
-#         D = cdist(X, [y])
-#         nonzeros = (D != 0)[:, 0]
-
-#         Dinv = 1 / D[nonzeros]
-#         Dinvs = np.sum(Dinv)
-#         W = Dinv / Dinvs
-#         T = np.sum(W * X[nonzeros], 0)
-
-#         num_zeros = len(X) - np.sum(nonzeros)
-#         if num_zeros == 0:
-#             y1 = T
-#         elif num_zeros == len(X):
-#             return y
-#         else:
-#             R = (T - y) * Dinvs
-#             r = np.linalg.norm(R)
-#             rinv = 0 if r == 0 else num_zeros/r
-#             y1 = max(0, 1-rinv)*T + min(1, rinv)*y
-
-#         if euclidean(y, y1) < eps:
-#             return torch.tensor(y1)
-
-#         y = y1
-
-
 def wass_2_dists(dist1, dist2, device):
     sinkhorn = SinkhornDistance(eps=0.001, max_iter=500, device=device)
     d1_keys = list(dist1.keys())

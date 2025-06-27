@@ -1098,3 +1098,39 @@ def soft_clip_weights(state_dict, clip_threshold=5.0, shrink_ratio=0.9):
         )
         clipped_sd[name] = clipped
     return clipped_sd
+
+import torch
+
+def robust_aggregate_bn_buffers(buffer_name, client_models, agg_fn='median', min_val=1e-3, max_val=1e3):
+    """
+    Aggregate a specific BN buffer across clients using robust statistics.
+    Args:
+        buffer_name: str, e.g., 'layer1.0.bn1.running_mean'
+        client_models: list of models from clients
+        agg_fn: 'median' or 'trimmed_mean'
+        min_val, max_val: safety clamps
+    Returns:
+        aggregated tensor value
+    """
+    buffer_values = []
+    for client_model in client_models:
+        state_dict = client_model.state_dict()
+        if buffer_name in state_dict:
+            buffer_values.append(state_dict[buffer_name].float().cpu())
+    
+    if not buffer_values:
+        raise ValueError(f"No values found for buffer: {buffer_name}")
+
+    stacked = torch.stack(buffer_values, dim=0)
+
+    if agg_fn == 'median':
+        agg = torch.median(stacked, dim=0).values
+    elif agg_fn == 'trimmed_mean':
+        sorted_vals, _ = torch.sort(stacked, dim=0)
+        trim = int(0.2 * stacked.size(0))
+        trimmed = sorted_vals[trim : stacked.size(0) - trim]
+        agg = trimmed.mean(dim=0)
+    else:
+        raise ValueError("Unsupported aggregation method")
+
+    return torch.clamp(agg, min=min_val, max=max_val)

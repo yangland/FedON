@@ -1,4 +1,4 @@
-cuda_device: 7
+cuda_device: 2
 if_series: True
 
 # defense methods
