@@ -1,7 +1,7 @@
 from models.mnist_6l import Mnist_6L
 from models.convnet import ConvNet
 from models.cifar10_18l import Cifar10_18L 
-from models.resnet import ResNet18, ResNet14_Light, ResNet20, ResNet32, ResNet44
+from models.resnet import ResNet18, ResNet14_Light, ResNet20, ResNet32, ResNet44, bn_to_gn
 from models.vgg import VGG13, VGG16, VGG11, VGG13_32
 from models.efficientnet import EfficientNetB0
 import torchvision.models as models
@@ -16,7 +16,6 @@ def get_model(model_name):
         "ConvNet": ConvNet,
         "Mnist_6L": Mnist_6L,
         "Cifar10_18L": Cifar10_18L,
-        "ResNet18": ResNet18, # works for cifar10
         "VGG11": VGG11,
         "VGG13": VGG13,
         "VGG13_32": VGG13_32, # wrks for cifar10
@@ -29,11 +28,8 @@ def get_model(model_name):
         "LeNet5": LeNet5,
         "SimpleCNN_28": SimpleCNN_28,
         "SimpleCNN_32": SimpleCNN_32, # works for cifar10
-        "MobileNetV2_28": MobileNetV2_28, # works for fmnist
-        "ResNet20": ResNet20, # for cifar100
+        "ResNet18": ResNet18, # works for cifar10
         "ResNet14_Light": ResNet14_Light, # for cifar100 works
-        "ResNet32": ResNet32,
-        "ResNet44": ResNet44
     }
 
     if model_name not in model_dict:
@@ -61,33 +57,38 @@ class MobileNetV2(nn.Module):
 
 
 class MobileNetV2_32(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_groupnorm=True):
         super(MobileNetV2_32, self).__init__()
         self.model = models.mobilenet_v2(weights=None)
-        
-        # Modify the first layer for smaller input
+
+        # Modify the first layer for smaller input (e.g., CIFAR10)
         self.model.features[0][0] = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1, bias=False)
-        
+
         # Modify classifier
         self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
-        
+
+        # Replace all BatchNorm with GroupNorm
+        if use_groupnorm:
+            bn_to_gn(self.model)
+
     def forward(self, x):
         return self.model(x)
 
 
 class MobileNetV2_28(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_groupnorm=True):
         super(MobileNetV2_28, self).__init__()
         self.model = models.mobilenet_v2(weights=None)
         
         # Adjust first convolution: in_channels=1 for grayscale, smaller input
         self.model.features[0][0] = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1, bias=False)
         
-        # Optionally remove the second downsampling layer if needed (e.g., features[1])
-        # to retain more spatial information on such a small input
-
         # Modify the classifier to output the desired number of classes
         self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
+ 
+        # Replace all BatchNorm with GroupNorm
+        if use_groupnorm:
+            bn_to_gn(self.model) 
         
     def forward(self, x):
         return self.model(x)
