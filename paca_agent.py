@@ -108,10 +108,19 @@ class PCACAgent:
                 self.noise_std = min(0.4, self.noise_std * 1.1)
 
 
+
+
     def select_action(self, state_tensor, preference_vector):
         state_tensor = state_tensor.unsqueeze(0).to(self.device)
         preference_vector = preference_vector.unsqueeze(0).to(self.device)
-
+        
+        def wrap_action(x, low=-1.0, high=1.0):
+            """
+            Wrap a tensor x into the range [low, high] using modular arithmetic.
+            """
+            range_size = high - low
+            return ((x - low) % range_size) + low
+        
         with torch.no_grad():
             actor_output = self.actor(state_tensor, preference_vector).squeeze(0)
 
@@ -119,9 +128,9 @@ class PCACAgent:
             # Add Gaussian noise to actor output
             noisy_action = actor_output + torch.randn_like(actor_output) * self.noise_std
 
-            # Clamp to valid range
-            noisy_action[0] = torch.clamp(noisy_action[0], -1.0, 1.0)
-            noisy_action[1] = torch.clamp(noisy_action[1], 0.0, 1.0)
+            # Wrap values instead of clamping
+            noisy_action[0] = wrap_action(noisy_action[0], -1.0, 1.0)
+            noisy_action[1] = wrap_action(noisy_action[1], 0.0, 1.0)
 
             print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
             print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
@@ -147,6 +156,9 @@ class PCACAgent:
 
         else:
             raise ValueError(f"Unknown exploration_mode: {self.exploration_mode}")
+
+
+
 
 
     def update_epsilon(self):
