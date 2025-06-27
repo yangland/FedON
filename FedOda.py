@@ -690,13 +690,14 @@ class FedOda:
             cos_dist_target = safe_cosine_distance(delta, target_direction)
             cos_dist_benign = safe_cosine_distance(delta, benign_update)
 
-            self.logger.info(
-                f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, "
-                f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
-            )
+            # self.logger.info(
+            #     f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, "
+            #     f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
+            # )
 
             self.logger.info(
                 f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+                f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
             )
 
             # === Check for successful attack
@@ -1294,10 +1295,7 @@ class FedOda:
         
         new_model = deepcopy(model)
         update_dict = vector_to_state_dict(update_vector, new_model)
-        # for (name, param), (_, update) in zip(new_model.named_parameters(), update_dict.items()):
-        #     # print(f"[DEBUG] update.dtype = {update.dtype}, param dtype = {param.data.dtype}")
-        #     param.data += update
-
+        
         for name, param in new_model.named_parameters():
             if name in update_dict:
                 update = update_dict[name]
@@ -1708,8 +1706,8 @@ class FedOda:
 
                 # --- Log for debugging ---
                 self.logger.info(
-                    f"[PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
-                    f"preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
+                    f"[FedOda] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
+                    f"[FedOda] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
                 )
 
 
@@ -1748,11 +1746,6 @@ class FedOda:
             # === Step 5: Compute reward from previous round
             if self.prev_acc is not None:
                 r1 = 1.0 - acc_curr
-                # delta_r_threshold = 0.05
-                # if (self.prev_acc - acc_curr) >= delta_r_threshold:
-                #     r2 = (self.prev_acc - acc_curr) * 5
-                # else:
-                #     r2 = 0  # or whatever default value you want when the condition isn't met
                 r2 = (self.prev_acc - acc_curr) * 5
                 r3 = 0
                 reward_vector = [r1, r2]
