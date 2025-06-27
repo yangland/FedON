@@ -17,16 +17,16 @@ sensor_embed_dim: 256
 
 # fl client
 n: 100 # total clients 
-m: 30 # malicious clients
+m: 0 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
-c_model: "SimpleCNN_28" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
+c_model: "ResNet8_Light" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alpha: 0.2
 # '['2_label_flipping', 'MPAF', 'backdoor', 'label_perturbation', 'fakedata', 
 # 'clear_label_backdoor', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'dba', 'FedOda']
-attack_method: 'FedOda'
+attack_method: 'none'
 
 
 image_size: [1, 28, 28]
