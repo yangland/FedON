@@ -76,12 +76,6 @@ class PCACAgent:
         self.epsilon_min = 0.05     # Minimum ε (explore at least a little)
         self.epsilon_decay = 0.995  # Decay rate per training step (or episode)
 
-        # if preference is None:
-        #     preference = [0.5] * reward_dim
-        # else:
-        #     self.preference = preference
-        # self.preference = torch.tensor(preference, dtype=torch.float32).to(device)
-
     def update_noise_std(self, reward_scalar):
         if self.exploration_mode == 'noise':
             """

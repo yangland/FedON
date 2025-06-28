@@ -89,6 +89,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     c_epochs = params['c_epochs']
     c_momentum = params['c_momentum']
     c_lr = params['c_lr']
+
     client_batch_size = params['client_batch_size']
     clients_per_iter = params['clients_per_iter']
 

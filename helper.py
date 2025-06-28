@@ -624,7 +624,12 @@ def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, 
         lr = server_optim_c_lr if i == -1 else c_lr
 
         # Create optimizer
-        c_optimizer = torch.optim.SGD(c_model.parameters(), lr=lr, momentum=c_momentum)
+        c_optimizer = torch.optim.SGD(
+                c_model.parameters(),
+                lr=lr,
+                momentum=c_momentum,
+                weight_decay= params.get('weight_decay', 0.0005)
+            )
 
         # Create scheduler if specified
         c_scheduler = None
