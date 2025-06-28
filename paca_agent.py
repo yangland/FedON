@@ -125,8 +125,8 @@ class PCACAgent:
             noisy_action = actor_output + torch.randn_like(actor_output) * self.noise_std
 
             # Wrap values instead of clamping
-            noisy_action[0] = wrap_action(noisy_action[0], -1.0, 1.0)
-            noisy_action[1] = wrap_action(noisy_action[1], -1.0, 1.0)
+            noisy_action[0] = torch.clamp(noisy_action[0], -1.0, 1.0)
+            noisy_action[1] = torch.clamp(noisy_action[1], -1.0, 1.0)
 
             print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
             print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
