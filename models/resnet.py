@@ -288,14 +288,19 @@ class ResNet8_Light(nn.Module):
         return out
 
 
-def bn_to_gn(module, num_groups=16):
-    """
-    Recursively convert all BatchNorm2d layers to GroupNorm.
-    """
+def bn_to_gn(module, max_groups=16):
     for name, child in module.named_children():
         if isinstance(child, nn.BatchNorm2d):
             num_channels = child.num_features
-            gn = nn.GroupNorm(num_groups=min(num_groups, num_channels), num_channels=num_channels)
-            setattr(module, name, gn)
+
+            # Find the largest num_groups that divides num_channels and ≤ max_groups
+            for num_groups in reversed(range(1, max_groups + 1)):
+                if num_channels % num_groups == 0:
+                    gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
+                    setattr(module, name, gn)
+                    break
+            else:
+                raise ValueError(f"Cannot find valid num_groups for GroupNorm with num_channels={num_channels}")
+
         else:
-            bn_to_gn(child, num_groups)
+            bn_to_gn(child, max_groups)

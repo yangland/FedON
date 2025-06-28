@@ -30,7 +30,8 @@ def get_model(model_name):
         "SimpleCNN_32": SimpleCNN_32, # works for cifar10
         "ResNet18": ResNet18, # works for cifar10
         "ResNet14_Light": ResNet14_Light, # for cifar100 works
-        "ResNet8_Light": ResNet8_Light
+        "ResNet8_Light": ResNet8_Light,
+        "ResNet20": ResNet20
     }
 
     if model_name not in model_dict:
