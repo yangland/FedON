@@ -1374,7 +1374,6 @@ class FedOda:
 
 
 
-
     def _evaluate_model(self, model, loader):
         """
         Evaluate the given model on the given data loader.
@@ -1980,7 +1979,7 @@ class FedOda:
         self.epsilon = scaling_l2 * avg_update_norm
 
         # ----> Sample cosine upper bound in [0, cos_dist_mali_benign - avg_cos_distance / 2]
-        cos_ub = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance / 2))
+        cos_ub = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance / 2)) # to change the negative begining value
         scaling_cos = np.random.uniform(0.0, cos_ub)
 
         # Combine into action vector

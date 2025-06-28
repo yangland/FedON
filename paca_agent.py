@@ -29,7 +29,8 @@ class PCACActor(nn.Module):
 
         # Apply separate activations
         a0 = torch.tanh(self.out_l2(features))      # [-1, 1]
-        a1 = torch.sigmoid(self.out_cos(features))  # [0, 1]
+        # a1 = torch.sigmoid(self.out_cos(features))  # [0, 1]
+        a1 = torch.tanh(self.out_cos(features))      # [-1, 1]
 
         action = torch.cat([a0, a1], dim=-1)        # shape: [batch_size, 2]
         return action
@@ -75,6 +76,7 @@ class PCACAgent:
         self.epsilon = 1.0          # Start with full exploration
         self.epsilon_min = 0.05     # Minimum ε (explore at least a little)
         self.epsilon_decay = 0.995  # Decay rate per training step (or episode)
+
 
     def update_noise_std(self, reward_scalar):
         if self.exploration_mode == 'noise':
@@ -124,7 +126,7 @@ class PCACAgent:
 
             # Wrap values instead of clamping
             noisy_action[0] = wrap_action(noisy_action[0], -1.0, 1.0)
-            noisy_action[1] = wrap_action(noisy_action[1], 0.0, 1.0)
+            noisy_action[1] = wrap_action(noisy_action[1], -1.0, 1.0)
 
             print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
             print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
@@ -136,14 +138,14 @@ class PCACAgent:
                 # Fully random action
                 random_action = torch.zeros(2).to(self.device)
                 random_action[0] = torch.FloatTensor(1).uniform_(-1.0, 1.0).to(self.device)
-                random_action[1] = torch.FloatTensor(1).uniform_(0.0, 1.0).to(self.device)
+                random_action[1] = torch.FloatTensor(1).uniform_(-1.0, 1.0).to(self.device)
 
                 print(f"[PCAC] random_action (ε={self.epsilon:.4f}): {random_action.cpu().numpy()}")
                 return random_action
             else:
                 # Use actor output
                 actor_output[0] = torch.clamp(actor_output[0], -1.0, 1.0)
-                actor_output[1] = torch.clamp(actor_output[1], 0.0, 1.0)
+                actor_output[1] = torch.clamp(actor_output[1], -1.0, 1.0)
 
                 print(f"[PCAC] actor_output (ε={self.epsilon:.4f}): {actor_output.cpu().numpy()}")
                 return actor_output

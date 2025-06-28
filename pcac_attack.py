@@ -40,8 +40,17 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     # ----> Cosine upper bound
     cos_dist_high_bound = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance/2))
 
-    # ----> Updated cosine mapping
-    scaling_cos = cosine_mapping_from_0_to_1(norm_scaling_cos.item(), max_val=cos_dist_high_bound)
+    # # ----> Updated 0-1 cosine mapping
+    # scaling_cos = cosine_mapping_from_0_to_1(norm_scaling_cos.item(), max_val=cos_dist_high_bound)
+    
+    # -- Use the new symmetric log mapping
+    scaling_cos = cosine_mapping_symmetric_log(
+        action_val=norm_scaling_cos.item(),
+        max_pos_val=cos_dist_high_bound,
+        cos_dist_mali_benign=cos_dist_mali_benign,  # used to compute 2 - cos_dist
+        log_base=4.0,
+        start_at=0.01
+    )
 
     # ----> Apply attack
     fedoda.scaling_l2 = scaling_l2
@@ -77,6 +86,35 @@ def cosine_mapping_from_0_to_1(action_val, max_val=1.0, log_base=4.0, start_at=0
     action = float(torch.clamp(torch.tensor(action_val), 0.0, 1.0))
     scaled = np.log1p(action * (log_base - 1)) / np.log(log_base)  # ∈ [0, 1]
     return start_at + (max_val - start_at) * scaled
+
+
+def cosine_mapping_symmetric_log(action_val, 
+                                 max_pos_val,  # toward benign
+                                 cos_dist_mali_benign,
+                                 log_base=4.0, 
+                                 start_at=0.01):
+    """
+    Maps action_val ∈ [-1, 1] to cosine distance from mali_direction using log scale:
+    - action = 0 → cos_dist = 0 (aligned with mali_direction)
+    - action = +1 → cos_dist = max_pos_val (toward benign)
+    - action = -1 → cos_dist = max_neg_val = 2 - cos_dist_mali_benign (opposite of benign)
+    """
+    action_val = float(torch.clamp(torch.tensor(action_val), -1.0, 1.0))
+
+    if action_val > 0:
+        # Log mapping toward benign direction
+        scaled = np.log1p(action_val * (log_base - 1)) / np.log(log_base)
+        return start_at + (max_pos_val - start_at) * scaled
+
+    elif action_val < 0:
+        # Log mapping toward opposite of benign
+        max_neg_val = 2.0 - cos_dist_mali_benign
+        scaled = np.log1p(-action_val * (log_base - 1)) / np.log(log_base)
+        return start_at + (max_neg_val - start_at) * scaled
+
+    else:
+        return 0.0
+
 
 def compute_noise_std(iteration, curr_acc, prev_acc, explore_window=50):
     if iteration < explore_window:
