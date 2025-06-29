@@ -105,8 +105,8 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         # ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
         # ds_train = CachedDataset(ds_train)
         # ds_test = CachedDataset(ds_test)
-        ds_train = load_or_cache_imagenette(split='train', transform=transform)
-        ds_test = load_or_cache_imagenette(split='val', transform=transform)
+        ds_train = load_or_cache_imagenette(split='train', transform=transform, cache_dir='./data/cache')
+        ds_test = load_or_cache_imagenette(split='val', transform=transform, cache_dir='./data/cache')
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)
@@ -144,14 +144,14 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         # this step is very slow
         ds_train = to_torch_ds(ds_train, transform)
         ds_test = to_torch_ds(ds_train, transform)
-    elif dataset == 'imagenette':
-        ds = huggingface_load_dataset("johnowhitaker/imagenette2-320")['train']
-        ds_torch = to_torch_ds(ds, transform)
-        random.shuffle(ds_torch)
-        n_total = len(ds_torch)
-        n_test = int(0.10* n_total)
-        ds_test = torch.utils.data.Subset(ds_torch, range(n_test))
-        ds_train = torch.utils.data.Subset(ds_torch, range(n_test, n_total)) 
+    # elif dataset == 'imagenette':
+    #     ds = huggingface_load_dataset("johnowhitaker/imagenette2-320")['train']
+    #     ds_torch = to_torch_ds(ds, transform)
+    #     random.shuffle(ds_torch)
+    #     n_total = len(ds_torch)
+    #     n_test = int(0.10* n_total)
+    #     ds_test = torch.utils.data.Subset(ds_torch, range(n_test))
+    #     ds_train = torch.utils.data.Subset(ds_torch, range(n_test, n_total)) 
         # print(ds_train[0][0])
         # print(ds_train[0][1])
     elif dataset == 'ch':

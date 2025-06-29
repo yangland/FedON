@@ -49,11 +49,15 @@ def get_model(model_name):
 
 # Example MobileNetV2 wrapper
 class MobileNetV2(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_groupnorm=True):
         super(MobileNetV2, self).__init__()
         self.model = models.mobilenet_v2(weights=None)
         self.model.classifier[1] = nn.Linear(self.model.last_channel, num_classes)
-
+        
+        # Replace all BatchNorm with GroupNorm
+        if use_groupnorm:
+            bn_to_gn(self.model)
+    
     def forward(self, x):
         return self.model(x)
 
@@ -98,11 +102,14 @@ class MobileNetV2_28(nn.Module):
 
 # Example SqueezeNet wrapper
 class SqueezeNet(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_groupnorm=True):
         super(SqueezeNet, self).__init__()
         self.model = models.squeezenet1_0(weights=None)
         self.model.classifier[1] = nn.Conv2d(512, num_classes, kernel_size=(1,1), stride=(1,1))
         self.model.num_classes = num_classes
+        # Replace all BatchNorm with GroupNorm
+        if use_groupnorm:
+            bn_to_gn(self.model)
 
     def forward(self, x):
         return self.model(x)
