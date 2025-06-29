@@ -13,4 +13,4 @@ jupyter_notebooks/saved_imgs/
 jupyter_notebooks/ddpm-butterflies-128/
 data_raw/
 data_raw.zip
-experiments/
+experiments/imagenette2-320.tgz
