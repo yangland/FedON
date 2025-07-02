@@ -21,9 +21,9 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'cifar10'
-c_model: "ResNet18" #  "ResNet18", "VGG13_32", "SqueezeNet_32", "SimpleCNN_32"
+c_model: "ResNet14_Light" #  "ResNet18", "VGG13_32", "SqueezeNet_32", "SimpleCNN_32"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
-dirichlet_alphas: [0.3]
+dirichlet_alphas: [0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
 attack_methods: ['none', 'FedOda', 'MPAF',  'label_perturbation', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'FedOda', 'FedOda']
 # only for reverse_grad, backdoor 
@@ -31,7 +31,7 @@ attack_magnitude: 1
 
 image_size: [3, 32, 32]
 c_epochs: 1 # 2, 5, 10
-c_lr: 0.001
+c_lr: 0.01
 c_momentum: 0.9
 c_weight_decay: 0.0005
 client_batch_size: 64
