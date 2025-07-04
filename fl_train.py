@@ -34,12 +34,16 @@ from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves
 logger = logging.getLogger("individual_logging")
 
 def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
+    # Generate or get seed
+    seed = params.get('seed', random.randint(0, 2**32 - 1))
+
     # Set random seeds for reproducibility
-    random.seed(params.get('seed', 42))
-    np.random.seed(params.get('seed', 42))
-    torch.manual_seed(params.get('seed', 42))
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(params.get('seed', 42))
+        torch.cuda.manual_seed_all(seed)
+
     
     client_num = params['n']
     malicious_num = params['m']
