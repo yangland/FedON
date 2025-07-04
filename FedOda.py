@@ -486,28 +486,6 @@ class FedOda:
         return min(r1, 1.0)  # cap to 1.0
 
 
-    # def compute_attack_influence_r2(self, prev_acc, curr_acc, target_acc=0.1, tolerance=0.03,
-    #                             max_penalty=20.0, scale=50.0):
-    #     if prev_acc is None:
-    #         return 0.0
-            
-    #     delta = prev_acc - curr_acc
-        
-    #     # Case 1: Accuracy above target + tolerance → aggressive attack
-    #     if curr_acc > target_acc + tolerance:
-    #         return delta * scale  # Positive if accuracy dropped
-            
-    #     # Case 2: Within target range → maintenance
-    #     elif curr_acc >= target_acc - tolerance:
-    #         if delta > 0:  # Accuracy dropped
-    #             return delta * (scale * 0.5)  # Smaller reward for maintenance
-    #         else:  # Accuracy increased
-    #             return delta * max_penalty  # Penalize increases
-                
-    #     # Case 3: Below target → small positive reward
-    #     else:
-    #         return 0.1  # Small constant reward for staying below target
-
     def compute_attack_influence_r2(self, prev_acc, curr_acc, scale=50.0):
         return (prev_acc - curr_acc) * scale / 100.0
     
@@ -692,7 +670,6 @@ class FedOda:
 
             # self.logger.info(
             #     f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, "
-            #     f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
             # )
 
             self.logger.info(
@@ -1612,6 +1589,15 @@ class FedOda:
         self.logger.info("[FedOda] Step 3: Simulating benign updates for sampled clients")
         avg_l2_distance, avg_cos_distance, avg_l2_norm, avg_full_model_cos = \
             self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
+            
+            
+        # Step 3: Compute cosine distance between g_m and benign_direction
+        cos_dist_g_m_g_b = 1 - F.cosine_similarity(
+                            g_m.unsqueeze(0), benign_direction.unsqueeze(0), dim=1
+                        ).item()
+
+
+        self.logger.info(f"[FedOda] Cosine distance between g_m and g_b: {cos_dist_g_m_g_b:.4f}")
 
         # Get the estimated benign model update(\Delta_b'), and the best attack direction (g_m)   
         benign_update = avg_l2_norm * benign_direction
@@ -1727,7 +1713,6 @@ class FedOda:
             self.prev_state = state
             self.prev_action = action
             self.prev_acc = acc_curr
-
             
         elif self.attack_mode == "MOQ":
             malicious_update_dict, malicious_update, action, state = moq_attack(
