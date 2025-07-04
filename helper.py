@@ -358,9 +358,7 @@ def dirichlet_non_iid(fl_class_num, client_num, fl_train, dirichlet_alpha):
             raise ValueError(f"Label {label} exceeds number of classes ({fl_class_num})")
         label_indices[label].append(idx)
     
-    # fl_train = list(fl_train)
-    for idx, (_, label) in enumerate(fl_train):
-        label_indices[label].append(idx)
+
     # print("label_indices", label_indices)
     # Dicts to store client data
     fl_data_dict = defaultdict(list)
