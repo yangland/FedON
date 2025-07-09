@@ -1,4 +1,4 @@
-cuda_device: 2
+cuda_device: 6
 if_series: True
 
 # defense methods
@@ -17,7 +17,7 @@ sensor_embed_dim: 256
 
 # fl client
 n: 100 # total clients 
-m: 10 # malicious clients
+m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'cifar10'
