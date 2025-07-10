@@ -31,6 +31,26 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     # ----> Action selection
     action = agent.select_action(state_tensor, preference)
     
+        # === Apply Ablation Configurations ===
+    if fedoda.ablation_mode == "fix_degree":
+        # Fix cosine distance to baseline (no directional constraint)
+        norm_scaling_cos = torch.tensor(0.0).to(agent.device)  # action[1] = 0
+
+    elif fedoda.ablation_mode == "fix_l2":
+        # Fix L2 scaling so scaling_l2 == 3.0
+        # Reverse of: scaling_l2 = linear_map_from_tanh(action_val, 0.5, 20.0)
+        def inverse_linear_map(val, low=0.5, high=20.0):
+            val = np.clip(val, low, high)
+            norm = 2 * (val - low) / (high - low) - 1
+            return float(np.clip(norm, -1.0, 1.0))
+
+        fixed_action0 = inverse_linear_map(3.0, 0.5, 20.0)  # L2 scaling == 3
+        norm_scaling_l2 = torch.tensor(fixed_action0).to(agent.device)  # action[0] = value
+
+    if fedoda.ablation_mode:
+        fedoda.logger.info(f"[FedOda][Ablation] Mode: {fedoda.ablation_mode}, "
+                        f"Action Override → L2: {norm_scaling_l2.item():.4f}, Cos: {norm_scaling_cos.item():.4f}")
+
     
     norm_scaling_l2, norm_scaling_cos = action  # cosine ∈ [0,1] now
 

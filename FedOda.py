@@ -26,7 +26,7 @@ class FedOda:
                  malicious_client_ids, fl_mali_data_dict, E=5, scaling_l2=8,
                  reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
-                 attack_mode="PCAC", logger=None):
+                 rl_mode="PCAC", ablation_mode=None, logger=None):
         self.model_fn = model_fn
         self.device = device
         self.E = E # Number of rounds to consider for history
@@ -52,8 +52,8 @@ class FedOda:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
-        self.attack_mode = "PCAC" # 'BO', "BI", "PPO", "ES" "MOQ", "PCAC"
-        if self.attack_mode == "PPO":
+        self.rl_mode = rl_mode # 'BO', "BI", "PPO", "ES" "MOQ", "PCAC"
+        if self.rl_mode == "PPO":
             self.ppo_agent = PPOAgent(state_dim=5, 
                                       action_dim=2, 
                                       device=device, 
@@ -64,7 +64,7 @@ class FedOda:
         self.prev_malicious_update = None
         
         # Create the Bayesian Optimizer
-        if self.attack_mode == "BO":
+        if self.rl_mode == "BO":
             l2_bound = (-1.0, 1.0)
             cos_bound = (-1.0, 1.0)
             self.bayes_optimizer = BayesOptimizer(
@@ -75,7 +75,7 @@ class FedOda:
                 random_state=42
             )
 
-        if self.attack_mode == "MOQ":
+        if self.rl_mode == "MOQ":
             self.moq_preference_vector = torch.tensor([0.6, 0.4], dtype=torch.float32)  # Adjust as needed
             initial_epsilon = 0.5
             self.moq_agent = MOQAgent(
@@ -94,7 +94,7 @@ class FedOda:
             self.prev_action = None
             self.prev_acc = None
         
-        if self.attack_mode == "PCAC":
+        if self.rl_mode == "PCAC":
             self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
             self.pcac_agent = PCACAgent(
                 state_dim=3,     # same as MOQ
@@ -106,7 +106,7 @@ class FedOda:
             self.prev_state = None
             self.prev_action = None
             self.prev_acc = None
-
+            self.ablation_mode = ablation_mode
     
         # For tracking performance history and reward scores
         self.bo_reward_history = []  # stores rewards (with None if skipped)
@@ -1617,7 +1617,7 @@ class FedOda:
         acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
         malicious_participation_rate = self.current_s_m / self.malicious_clients_num      
 
-        if self.attack_mode == "BO":
+        if self.rl_mode == "BO":
             malicious_update_dict, malicious_update, reward_vector, action = bo_attack(
                 fedoda=self,
                 mali_direction=mali_direction,
@@ -1630,13 +1630,13 @@ class FedOda:
             )
             r1, r2, r3 = reward_vector.tolist()
             reward_scalar = r2
-        elif self.attack_mode == "BI":  # Default BI mode
+        elif self.rl_mode == "BI":  # Default BI mode
             self.epsilon = self.scaling_l2 * avg_l2_norm
             malicious_update_dict, malicious_update = bi_attack(
                 self, mali_direction, benign_update,
                 avg_cos_distance, avg_l2_norm
             )
-        elif self.attack_mode == "RANDOM":
+        elif self.rl_mode == "RANDOM":
             cos_dist_mali_benign = 1 - F.cosine_similarity(
                         mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
                         ).item()
@@ -1650,7 +1650,7 @@ class FedOda:
                             cos_dist_mali_benign=cos_dist_mali_benign,
                             round_number=round_number
                         )
-        elif self.attack_mode == "PCAC":
+        elif self.rl_mode == "PCAC":
             malicious_update_dict, malicious_update, action, state, noise_std = pcac_attack(
                 fedoda=self,
                 mali_direction=mali_direction,
@@ -1714,7 +1714,7 @@ class FedOda:
             self.prev_action = action
             self.prev_acc = acc_curr
             
-        elif self.attack_mode == "MOQ":
+        elif self.rl_mode == "MOQ":
             malicious_update_dict, malicious_update, action, state = moq_attack(
                 fedoda=self,
                 mali_direction=mali_direction,
@@ -1785,7 +1785,7 @@ class FedOda:
 
                     self.logger.info(f"[FedOda][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}")
 
-        elif self.attack_mode == "PPO":
+        elif self.rl_mode == "PPO":
             # === Step 0: Measure current state
             curr_state = torch.tensor([
                 acc_prev,
@@ -1846,7 +1846,7 @@ class FedOda:
                 self.logger.info(f"[FedOda][PPO] Training PPO agent at round {round_number}")
                 self.ppo_agent.train(memory=self.ppo_agent.buffer, round_number=round_number)
                 self.ppo_agent.buffer.clear()
-        elif self.attack_mode == "ES":
+        elif self.rl_mode == "ES":
             round_number = len(self.val_acc_pooled_history)
             acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
             acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
