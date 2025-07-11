@@ -30,6 +30,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
 
     # ----> Action selection
     action = agent.select_action(state_tensor, preference)
+    norm_scaling_l2, norm_scaling_cos = action  # cosine ∈ [0,1] now
     
         # === Apply Ablation Configurations ===
     if fedoda.ablation_mode == "fix_degree":
@@ -52,7 +53,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
                         f"Action Override → L2: {norm_scaling_l2.item():.4f}, Cos: {norm_scaling_cos.item():.4f}")
 
     
-    norm_scaling_l2, norm_scaling_cos = action  # cosine ∈ [0,1] now
+    
 
     # ----> L2 scaling
     scaling_l2 = linear_map_from_tanh(norm_scaling_l2.item(), 0.5, 20.0)
