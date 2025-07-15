@@ -273,7 +273,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     client_batch_size=client_batch_size,
                     rl_mode=params.get('rl_mode', 'PCAC'),  # default to 'PCAC' if not specified
                     ablation_mode=params.get('ablation_mode', None),
-                    logger=logger)
+                    logger=logger,
+                    attack_config=params.get('attack', {})
+                    )
     else:
         foda = None
         

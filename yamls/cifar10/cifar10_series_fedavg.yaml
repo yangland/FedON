@@ -53,3 +53,15 @@ fedoda:
 
 
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
+rl_mode: "PCAC"  # "RANDOM"
+
+attack:
+  mode: PGD # "PGD", "PROJ"
+  pgd_steps: 20
+  pgd_lr: 0.1
+  alpha: 0.1
+  lambda_cos: 0.1
+  retry_limit: 5
+  harm_threshold: 0.0
+  epsilon_growth: 1.0
+  cos_growth: 0.9

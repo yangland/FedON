@@ -9,6 +9,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
                 avg_update_norm, prev_acc, curr_acc, iteration):
 
     agent = fedoda.pcac_agent
+    attack_cfg = fedoda.attack_config
     preference = fedoda.pcac_preference_vector
     cos_dist_mali_benign = 1 - F.cosine_similarity(
                             mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
@@ -78,20 +79,39 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     fedoda.scaling_cos = scaling_cos
     fedoda.epsilon = scaling_l2 * avg_update_norm
 
+    # malicious_update = fedoda.mali_update_craft_l2_cos(
+    #     model=fedoda.server_model,
+    #     benign_update=benign_update,
+    #     target_direction=mali_direction,
+    #     scaling_cos_dist=scaling_cos,
+    #     epsilon=fedoda.epsilon,
+    #     harm_threshold=0.0,
+    #     retry_limit=5,
+    #     epsilon_growth=1.0,
+    #     cos_growth=0.9,
+    #     mode="PROJ",
+    #     pgd_steps=20,
+    #     pgd_lr=0.05
+    # )
+
+
     malicious_update = fedoda.mali_update_craft_l2_cos(
         model=fedoda.server_model,
         benign_update=benign_update,
         target_direction=mali_direction,
         scaling_cos_dist=scaling_cos,
         epsilon=fedoda.epsilon,
-        harm_threshold=0.0,
-        retry_limit=5,
-        epsilon_growth=1.0,
-        cos_growth=0.9,
-        mode="PROJ",
-        pgd_steps=20,
-        pgd_lr=0.05
+        harm_threshold=attack_cfg.get('harm_threshold', 0.0),
+        retry_limit=attack_cfg.get('retry_limit', 5),
+        epsilon_growth=attack_cfg.get('epsilon_growth', 1.0),
+        cos_growth=attack_cfg.get('cos_growth', 0.9),
+        mode=attack_cfg.get('mode', "PROJ"),
+        pgd_steps=attack_cfg.get('pgd_steps', 20),
+        pgd_lr=attack_cfg.get('pgd_lr', 0.1),
+        alpha=attack_cfg.get('alpha', 0.1),
+        lambda_cos=attack_cfg.get('lambda_cos', 0.1)
     )
+
 
     malicious_update_dict = vector_to_state_dict(malicious_update, fedoda.server_model)
     return malicious_update_dict, malicious_update, action.tolist(), state, agent.noise_std

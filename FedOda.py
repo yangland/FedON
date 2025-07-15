@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from copy import deepcopy
 import math
@@ -20,13 +21,15 @@ from moq_agent import MOQAgent
 from moq_attack import moq_attack
 from paca_agent import PCACAgent
 from pcac_attack import pcac_attack
+from torch.func import functional_call
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
                  malicious_client_ids, fl_mali_data_dict, E=5, scaling_l2=8,
                  reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
-                 rl_mode="PCAC", ablation_mode=None, logger=None):
+                 rl_mode="PCAC", ablation_mode=None, logger=None,
+                 attack_config=None):  
         self.model_fn = model_fn
         self.device = device
         self.E = E # Number of rounds to consider for history
@@ -107,6 +110,7 @@ class FedOda:
             self.prev_action = None
             self.prev_acc = None
             self.ablation_mode = ablation_mode
+            self.attack_config = attack_config or {} 
     
         # For tracking performance history and reward scores
         self.bo_reward_history = []  # stores rewards (with None if skipped)
@@ -529,7 +533,7 @@ class FedOda:
         )
         return float(scaled_r3)
 
-    def compare_proj_vs_pgd_attack(self, benign_update, target_direction, scaling_cos, epsilon):
+    def compare_proj_vs_pgd_attack(self, benign_update, target_direction, scaling_cos, epsilon, pgd_steps=20, pgd_lr=0.1, alpha=0.1, lambda_cos=0.1):
         """
         Compare accuracy after applying PROJ vs PGD malicious updates.
         """
@@ -565,8 +569,10 @@ class FedOda:
             scaling_cos_dist=scaling_cos,
             epsilon=epsilon,
             mode="PGD",
-            pgd_steps=20,
-            pgd_lr=0.1
+            pgd_steps=pgd_steps,
+            pgd_lr=pgd_lr,
+            alpha=alpha,
+            lambda_cos=lambda_cos
         )
         model_pgd = self.apply_update_to_model(model, delta_pgd)
         acc_pgd = self.validate(model_pgd, self.pooled_balanced_loader)
@@ -606,6 +612,8 @@ class FedOda:
         mode="PROJ",
         pgd_steps=20,
         pgd_lr=0.1,
+        alpha=0.1,
+        lambda_cos=0.1
     ):
         """
         Craft a malicious update Δₘ under constraints using either:
@@ -637,14 +645,15 @@ class FedOda:
                     return torch.zeros_like(benign_update)
                 delta = crafted_direction / norm * epsilon
             elif mode == "PGD":
-                delta = self.pgd_craft_attack_delta(
+                delta = self.pgd_craft_attack_delta_optimized(
                     model=model,
                     target_direction=target_direction,
                     scaling_cos_dist=scaling_cos_dist,
                     epsilon=epsilon,
                     steps=pgd_steps,
                     lr=pgd_lr,
-                    device=self.device
+                    alpha=alpha,
+                    lambda_cos=lambda_cos
                 )
             else:
                 raise ValueError(f"Unknown attack mode: {mode}")
@@ -1994,3 +2003,164 @@ class FedOda:
         state = np.zeros(self.state_dim) if hasattr(self, 'state_dim') else None
 
         return malicious_update_dict, malicious_update, action, state, noise_std
+
+
+    def optimized_project_to_cosine(self, v, ref, desired_cos_dist, alpha=0.1):
+        """
+        Adjust vector `v` directly during gradient update to maintain desired cosine distance.
+        
+        Args:
+            v (torch.Tensor): Current delta vector.
+            ref (torch.Tensor): Reference direction.
+            desired_cos_dist (float): Target cosine distance to `ref`.
+            alpha (float): Weighting factor for cosine adjustment.
+        
+        Returns:
+            torch.Tensor: Adjusted vector that moves towards satisfying the cosine constraint.
+        """
+        desired_cos_sim = 1.0 - desired_cos_dist
+        desired_cos_sim = max(min(desired_cos_sim, 1.0), -1.0)
+
+        ref_unit = ref / (ref.norm() + 1e-10)
+        v_unit = v / (v.norm() + 1e-10)
+        
+        # Calculate current cosine similarity and difference
+        current_cos_sim = torch.dot(v_unit, ref_unit)
+        adjustment = ref_unit * (desired_cos_sim - current_cos_sim)
+        
+        # Adjust original vector to move towards desired cosine similarity
+        adjusted_v = v + alpha * adjustment * v.norm()
+        return adjusted_v
+
+    def project_to_exact_cosine(self, v, ref, target_cos_sim):
+        """
+        Projects vector v to have the given cosine similarity with ref.
+
+        Args:
+            v: Current vector (e.g., delta)
+            ref: Reference direction vector
+            target_cos_sim: Desired cosine similarity (e.g., 0.5)
+
+        Returns:
+            Adjusted vector with exact cosine similarity
+        """
+        v_norm = v.norm()
+        ref_unit = ref / (ref.norm() + 1e-10)
+
+        # Remove component of v along ref
+        proj_on_ref = torch.dot(v, ref_unit) * ref_unit
+        u_perp = v - proj_on_ref
+
+        u_perp_norm = u_perp.norm()
+        if u_perp_norm < 1e-6:
+            # Already aligned, just scale to match target cosine
+            return (target_cos_sim * v_norm) * ref_unit
+
+        # Construct new vector with desired cosine similarity
+        a = target_cos_sim * v_norm
+        b = (1.0 - target_cos_sim ** 2) ** 0.5 * v_norm
+        u_perp_unit = u_perp / u_perp_norm
+
+        adjusted = a * ref_unit + b * u_perp_unit
+        return adjusted
+
+
+    def pgd_craft_attack_delta_optimized(
+        self,
+        model,
+        target_direction,
+        scaling_cos_dist,
+        epsilon,
+        steps=20,
+        lr=0.1,
+        alpha=0.1,
+        lambda_cos=0.1,
+    ):
+        """
+        Performs loss-maximizing PGD attack while enforcing cosine and L2 constraints.
+
+        Args:
+            model: PyTorch model
+            target_direction: Reference benign direction (flat vector)
+            scaling_cos_dist: Target cosine distance to target_direction
+            epsilon: L2 norm constraint
+            steps: PGD steps
+            lr: Learning rate
+            alpha: Cosine projection step size
+            lambda_cos: Weight of cosine distance penalty in loss
+
+        Returns:
+            delta (torch.Tensor): Malicious flat update
+        """
+
+        # Flatten model parameters
+        model_flat = self.get_flat_model_params(model)
+
+        # Initialize delta
+        delta = torch.randn_like(model_flat, device=self.device) * 0.01
+        delta.requires_grad_()
+
+        optimizer = torch.optim.Adam([delta], lr=lr)
+        loss_fn = torch.nn.CrossEntropyLoss()
+
+        for step in range(steps):
+            optimizer.zero_grad()
+
+            # Generate perturbed model parameters
+            perturbed_flat = model_flat + delta
+            perturbed_params = self.set_flat_model_params_return_dict(model, perturbed_flat)
+
+            # Compute loss over a few batches
+            total_loss = 0.0
+            num_batches = 0
+
+            for i, (x, y) in enumerate(self.pooled_balanced_loader):
+                x, y = x.to(self.device), y.to(self.device)
+                logits = functional_call(model, perturbed_params, (x,))
+                batch_loss = loss_fn(logits, y)
+                total_loss += -batch_loss  # Maximize loss
+                num_batches += 1
+                if num_batches >= 3:
+                    break
+
+            total_loss /= num_batches
+
+            # Cosine regularization (during optimization)
+            cos_sim = F.cosine_similarity(delta, target_direction, dim=0)
+            cos_dist = 1.0 - cos_sim
+            total_loss += lambda_cos * cos_dist
+
+            # Backward pass
+            total_loss.backward()
+
+            grad_norm = delta.grad.norm().item() if delta.grad is not None else None
+            print(f"[Step {step+1}] Loss: {total_loss.item():.4f} | CosDist: {cos_dist.item():.4f} | ||Δ||: {delta.norm().item():.4f} | GradNorm: {grad_norm:.4f}")
+
+            optimizer.step()
+
+            # Post-step projection to enforce cosine and L2 norm
+            with torch.no_grad():
+                # Project delta to exact target cosine distance
+                delta.data = self.project_to_exact_cosine(
+                    delta.data,
+                    target_direction,
+                    target_cos_sim=1.0 - scaling_cos_dist
+                )
+
+                # Enforce L2 constraint
+                norm = delta.norm()
+                if norm > 1e-6:
+                    delta.data = delta.data / norm * epsilon
+
+        return delta.detach()
+
+
+
+    def set_flat_model_params_return_dict(self, model, flat_params):
+        param_dict = {}
+        pointer = 0
+        for name, param in model.named_parameters():
+            numel = param.numel()
+            param_dict[name] = flat_params[pointer:pointer + numel].view_as(param)
+            pointer += numel
+        return param_dict
