@@ -1,4 +1,4 @@
-cuda_device: 0
+cuda_device: 2
 if_series: True
 
 # defense methods
@@ -52,3 +52,30 @@ fedoda:
 
 
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
+rl_mode: "PCAC"  # "RANDOM"
+
+attack:
+  mode: PGD
+  pgd_steps: 20
+  pgd_lr: 0.1
+  alpha: 0.1
+  lambda_cos: 0.1
+  retry_limit: 5
+  harm_threshold: 0.0
+  epsilon_growth: 1.0
+  cos_growth: 0.9
+
+  # PCAC exploration parameters
+  exploration_mode: noise     # or "epsilon"
+  epsilon: 1.0
+  epsilon_min: 0.05
+  epsilon_decay: 0.995
+
+  # PCAC noise adaptation parameters
+  noise_init: 0.4
+  noise_min: 0.05
+  noise_max: 0.4
+  noise_decay: 0.9
+  noise_growth: 1.1
+  noise_alpha: 0.1
+
