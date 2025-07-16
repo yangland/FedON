@@ -288,6 +288,49 @@ class ResNet8_Light(nn.Module):
         return out
 
 
+# ResNet8 Light for FMNIST
+class ResNet8_Light_one_channel(nn.Module):
+    def __init__(self, num_classes=10, norm_layer=None, dataset='fmnist'):
+        super(ResNet8_Light_one_channel, self).__init__()
+        if norm_layer is None:
+            # Use GroupNorm with num_groups=4 for small channels (e.g., 16, 32, 64)
+            norm_layer = lambda num_channels: nn.GroupNorm(num_groups=4, num_channels=num_channels)
+
+        self.norm_layer = norm_layer
+        in_channels = channel_dict.get(dataset, 1)
+        self.in_planes = 16
+
+        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = self.norm_layer(16)
+
+        # ResNet8 = 3 layers, each with 2 blocks
+        self.layer1 = self._make_layer(16, 2, stride=1)
+        self.layer2 = self._make_layer(32, 2, stride=2)  # Downsampling
+        self.layer3 = self._make_layer(64, 2, stride=2)  # Downsampling
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(64, num_classes)
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s, self.norm_layer))
+            self.in_planes = planes
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))  # Initial conv
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+
+
 def bn_to_gn(module, max_groups=16):
     for name, child in module.named_children():
         if isinstance(child, nn.BatchNorm2d):

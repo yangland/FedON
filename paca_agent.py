@@ -54,7 +54,12 @@ class PCACCritic(nn.Module):
 
 
 class PCACAgent:
-    def __init__(self, state_dim, action_dim, reward_dim, device='cpu', lr=1e-3, gamma=0.99, logger=None):
+    def __init__(self, state_dim, action_dim, reward_dim, device='cpu', lr=1e-3, gamma=0.99, logger=None,
+                 noise_std_init=0.2, noise_std_min=0.05, noise_std_max=0.4,
+                 noise_decay=0.9, noise_growth=1.1, alpha=0.1,
+                 exploration_mode='noise', epsilon=1.0, epsilon_min=0.05, epsilon_decay=0.995):
+
+        # Existing...
         self.device = device
         self.gamma = gamma
         self.reward_dim = reward_dim
@@ -68,41 +73,36 @@ class PCACAgent:
 
         self.memory = []  # Simple replay buffer
         self.batch_size = 32
-        
+
+        # Noise exploration parameters
         self.reward_ema = 0.0
-        self.noise_std = 0.2  # starts high
-        self.exploration_mode = 'noise'     # or 'epsilon'
-        self.alpha = 0.1      # smoothing factor for EMA
-        self.epsilon = 1.0          # Start with full exploration
-        self.epsilon_min = 0.05     # Minimum ε (explore at least a little)
-        self.epsilon_decay = 0.995  # Decay rate per training step (or episode)
+        self.noise_std = noise_std_init
+        self.noise_std_min = noise_std_min
+        self.noise_std_max = noise_std_max
+        self.noise_decay = noise_decay
+        self.noise_growth = noise_growth
+        self.alpha = alpha
+
+        # Exploration mode: 'noise' or 'epsilon'
+        self.exploration_mode = exploration_mode
+        self.epsilon = epsilon
+        self.epsilon_min = epsilon_min
+        self.epsilon_decay = epsilon_decay
+
 
 
     def update_noise_std(self, reward_scalar):
         if self.exploration_mode == 'noise':
-            """
-            Update exploration noise based on reward feedback.
-            If reward improves → reduce noise (exploit more)
-            If reward worsens → increase noise (explore more)
-            """
-            # Normalize reward to [0, 1] for stability (optional)
             reward_scalar = float(reward_scalar)
             reward_scalar = np.clip(reward_scalar, 0.0, 1.0)
 
-            # Update EMA of recent rewards
             self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
-
-            # Compute delta
             delta = reward_scalar - self.reward_ema
 
-            # Adjust noise_std based on delta
             if delta > 0:
-                # Reward better than expected → decrease noise
-                self.noise_std = max(0.05, self.noise_std * 0.9)
+                self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
             else:
-                # Reward worse than expected → increase noise
-                self.noise_std = min(0.4, self.noise_std * 1.1)
-
+                self.noise_std = min(self.noise_std_max, self.noise_std * self.noise_growth)
 
 
 

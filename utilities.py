@@ -808,3 +808,18 @@ def create_balanced_loader(dataset, batch_size=64, max_samples_per_class=None, s
     balanced_subset = Subset(dataset, balanced_indices)
     return DataLoader(balanced_subset, batch_size=batch_size, shuffle=shuffle, pin_memory=False)
 
+def unflatten_delta_to_model(delta: torch.Tensor, model: torch.nn.Module) -> dict:
+    """
+    Given a flat parameter delta tensor, return a dict of {param_name: reshaped_delta}
+    that matches the model's parameter shapes.
+    """
+    delta_dict = {}
+    offset = 0
+    for name, param in model.named_parameters():
+        numel = param.numel()
+        shape = param.shape
+        delta_piece = delta[offset: offset + numel].view(shape)
+        delta_dict[name] = delta_piece
+        offset += numel
+    assert offset == delta.numel(), "Delta size mismatch with model param sizes"
+    return delta_dict

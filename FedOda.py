@@ -10,7 +10,7 @@ import random
 import itertools
 from typing import List, Optional
 import math
-from utilities import create_balanced_loader
+from utilities import create_balanced_loader, unflatten_delta_to_model
 import numpy as np
 from PPO import PPOAgent
 from utils_attack import *
@@ -99,18 +99,46 @@ class FedOda:
         
         if self.rl_mode == "PCAC":
             self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
+            # self.pcac_agent = PCACAgent(
+            #     state_dim=3,     # same as MOQ
+            #     action_dim=2,    # norm_scaling_l2, norm_scaling_cos
+            #     reward_dim=2,    # r1, r2
+            #     device=self.device,
+            #     logger=logger,
+                
+            # )
+            self.attack_config = attack_config or {} 
+            
             self.pcac_agent = PCACAgent(
-                state_dim=3,     # same as MOQ
-                action_dim=2,    # norm_scaling_l2, norm_scaling_cos
-                reward_dim=2,    # r1, r2
-                device=self.device,
+                state_dim=3,
+                action_dim=2,
+                reward_dim=2,
+                device=device,
+                lr=self.attack_config.get('lr', 1e-3),
+                gamma=self.attack_config.get('gamma', 0.99),
+
+                # Exploration mode
+                exploration_mode=self.attack_config.get('exploration_mode', 'noise'),
+                epsilon=self.attack_config.get('epsilon', 1.0),
+                epsilon_min=self.attack_config.get('epsilon_min', 0.05),
+                epsilon_decay=self.attack_config.get('epsilon_decay', 0.995),
+
+                # Noise adaptation
+                noise_std_init=self.attack_config.get('noise_init', 0.2),
+                noise_std_min=self.attack_config.get('noise_min', 0.05),
+                noise_std_max=self.attack_config.get('noise_max', 0.4),
+                noise_decay=self.attack_config.get('noise_decay', 0.9),
+                noise_growth=self.attack_config.get('noise_growth', 1.1),
+                alpha=self.attack_config.get('noise_alpha', 0.1),
+
                 logger=logger
             )
+            
             self.prev_state = None
             self.prev_action = None
             self.prev_acc = None
             self.ablation_mode = ablation_mode
-            self.attack_config = attack_config or {} 
+            
     
         # For tracking performance history and reward scores
         self.bo_reward_history = []  # stores rewards (with None if skipped)
@@ -549,7 +577,7 @@ class FedOda:
         delta_proj = self.mali_update_craft_l2_cos(
             model=deepcopy(model),
             benign_update=benign_update,
-            target_direction=target_direction,
+            mali_update=target_direction,
             scaling_cos_dist=scaling_cos,
             epsilon=epsilon,
             mode="PROJ"
@@ -565,7 +593,7 @@ class FedOda:
         delta_pgd = self.mali_update_craft_l2_cos(
             model=deepcopy(model),
             benign_update=benign_update,
-            target_direction=target_direction,
+            mali_update=target_direction,
             scaling_cos_dist=scaling_cos,
             epsilon=epsilon,
             mode="PGD",
@@ -602,7 +630,7 @@ class FedOda:
         self,
         model,
         benign_update,
-        target_direction,
+        mali_update,
         scaling_cos_dist,
         epsilon,
         harm_threshold=0.0,
@@ -635,7 +663,7 @@ class FedOda:
                 # === Step 1: Project to desired cosine distance
                 crafted_direction = self.project_to_cosine(
                     v=benign_update,
-                    ref=target_direction,
+                    ref=mali_update,
                     desired_cos_dist=scaling_cos_dist
                 )
                 # === Step 2: Scale to L2 norm = epsilon
@@ -647,8 +675,9 @@ class FedOda:
             elif mode == "PGD":
                 delta = self.pgd_craft_attack_delta_optimized(
                     model=model,
-                    target_direction=target_direction,
-                    scaling_cos_dist=scaling_cos_dist,
+                    mali_update=mali_update,
+                    benign_update=benign_update,
+                    target_cos_dist=scaling_cos_dist,
                     epsilon=epsilon,
                     steps=pgd_steps,
                     lr=pgd_lr,
@@ -672,14 +701,11 @@ class FedOda:
                 cos_sim = torch.dot(a, b) / (a_norm * b_norm)
                 return 1 - cos_sim.item()
 
-            cos_dist = safe_cosine_distance(delta, target_direction)
+            cos_dist = safe_cosine_distance(delta, mali_update)
 
-            cos_dist_target = safe_cosine_distance(delta, target_direction)
+            cos_dist_target = safe_cosine_distance(delta, mali_update)
             cos_dist_benign = safe_cosine_distance(delta, benign_update)
 
-            # self.logger.info(
-            #     f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, "
-            # )
 
             self.logger.info(
                 f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
@@ -1550,14 +1576,22 @@ class FedOda:
 
 
     def log_attack_statistics(self, logger, benign_update, malicious_update, avg_l2_dist, avg_cos_distance,
-                                avg_full_model_cos, server_model): 
+                            avg_full_model_cos, server_model, mali_direction): 
         mali_norm = torch.norm(malicious_update).item()
         benign_norm = torch.norm(benign_update).item()
         l2_dist = torch.norm(malicious_update - benign_update).item()
+        
+        # Cosine similarity: Δₘ ~ Δ_b
         cos_dist = 1 - torch.nn.functional.cosine_similarity(
             malicious_update.unsqueeze(0), benign_update.unsqueeze(0)
         ).item()
 
+        # Cosine similarity: Δₘ ~ Δg
+        cos_dist_mg = 1 - torch.nn.functional.cosine_similarity(
+            malicious_update.unsqueeze(0), mali_direction.unsqueeze(0)
+        ).item()
+
+        # Cosine similarity: model(Δₘ) ~ model(Δ_b)
         server_weights = flatten_model(server_model.state_dict())
         mali_model_vec = server_weights + malicious_update
         benign_model_vec = server_weights + benign_update
@@ -1573,11 +1607,12 @@ class FedOda:
             f"[FedOda] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_dist:.4f}"
         )
         logger.info(
-            f"[FedOda] Cos Dist Δ|  Δ_m~Δ_b: {cos_dist:.4f} | Δb~Δb: {avg_cos_distance:.4f}"
+            f"[FedOda] Cos Dist Δ|  Δ_m~Δ_b: {cos_dist:.4f} | Δ_m~Δ_g: {cos_dist_mg:.4f} | Δ_b~Δ_b: {avg_cos_distance:.4f}"
         )
         logger.info(
             f"[FedOda] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
         )
+
 
 
     def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs, round_number):
@@ -1904,6 +1939,7 @@ class FedOda:
             avg_cos_distance=avg_cos_distance,
             avg_full_model_cos=avg_full_model_cos,
             server_model=self.server_model,
+            mali_direction=mali_direction,  # <-- Add this
         )
         
         self.log_to_full_history(
@@ -1987,7 +2023,7 @@ class FedOda:
         malicious_update_dict, malicious_update, noise_std = self.mali_update_craft_l2_cos(
             model=self.server_model,
             benign_update=benign_update,
-            target_direction=mali_direction,
+            mali_update=mali_direction,
             scaling_cos_dist=scaling_cos,
             epsilon=self.epsilon,
             harm_threshold=0.0,
@@ -2065,91 +2101,104 @@ class FedOda:
         return adjusted
 
 
+
     def pgd_craft_attack_delta_optimized(
         self,
         model,
-        target_direction,
-        scaling_cos_dist,
-        epsilon,
-        steps=20,
-        lr=0.1,
-        alpha=0.1,
-        lambda_cos=0.1,
+        mali_update: torch.Tensor,     # (flattened) malicious base direction
+        benign_update: torch.Tensor,   # (flattened) benign direction
+        target_cos_dist: float,        # desired cosine distance toward benign direction
+        epsilon: float,                # L2 norm constraint
+        steps: int = 20,
+        lr: float = 0.1,
+        alpha: float = 0.1,
+        lambda_cos: float = 0.1,
     ):
         """
-        Performs loss-maximizing PGD attack while enforcing cosine and L2 constraints.
+        PGD-based malicious update crafting under L2 and cosine constraints.
+        
+        Objective:
+        max_delta [ E_{(x,y) ~ D_m} [ -CE(f_{θ+δ}(x), y) ] + λ_cos * cos_dist(δ, target_direction) ]
+        s.t. ||δ||_2 <= ε, cos_dist(δ, target_direction) = target_cos_dist
 
-        Args:
-            model: PyTorch model
-            target_direction: Reference benign direction (flat vector)
-            scaling_cos_dist: Target cosine distance to target_direction
-            epsilon: L2 norm constraint
-            steps: PGD steps
-            lr: Learning rate
-            alpha: Cosine projection step size
-            lambda_cos: Weight of cosine distance penalty in loss
-
-        Returns:
-            delta (torch.Tensor): Malicious flat update
+        Reference: Section 4.2 of the paper.
         """
 
-        # Flatten model parameters
-        model_flat = self.get_flat_model_params(model)
+        # Normalize input directions
+        mali_update = F.normalize(mali_update, dim=0)
+        benign_update = F.normalize(benign_update, dim=0)
 
-        # Initialize delta
-        delta = torch.randn_like(model_flat, device=self.device) * 0.01
-        delta.requires_grad_()
+        # === Step 1: Interpolate toward benign direction ===
+        def interpolate_direction(ref: torch.Tensor, target: torch.Tensor, dist: float) -> torch.Tensor:
+            interp = (1 - dist) * ref + dist * target
+            return F.normalize(interp, dim=0)
 
-        optimizer = torch.optim.Adam([delta], lr=lr)
-        loss_fn = torch.nn.CrossEntropyLoss()
+        # target_direction = interpolate_direction(mali_update, benign_update, target_cos_dist)
+        target_direction = benign_update
 
+        # === Step 2: Initialize delta ===
+        delta = mali_update.clone().detach().requires_grad_(True)
+        delta.data = F.normalize(delta.data, dim=0) * epsilon
+
+        optimizer = torch.optim.SGD([delta], lr=lr)
+
+        # === Step 3: PGD Loop ===
         for step in range(steps):
             optimizer.zero_grad()
 
-            # Generate perturbed model parameters
-            perturbed_flat = model_flat + delta
-            perturbed_params = self.set_flat_model_params_return_dict(model, perturbed_flat)
+            # Unflatten delta → dict {param_name: reshaped_delta}
+            delta_dict = unflatten_delta_to_model(delta, model)
 
-            # Compute loss over a few batches
-            total_loss = 0.0
-            num_batches = 0
+            # Construct perturbed parameter dict
+            perturbed_params = {
+                name: param + delta_dict[name]
+                for name, param in model.named_parameters()
+            }
 
-            for i, (x, y) in enumerate(self.pooled_balanced_loader):
-                x, y = x.to(self.device), y.to(self.device)
-                logits = functional_call(model, perturbed_params, (x,))
-                batch_loss = loss_fn(logits, y)
-                total_loss += -batch_loss  # Maximize loss
-                num_batches += 1
-                if num_batches >= 3:
-                    break
+            # Get malicious batch from self.pooled_loader
+            try:
+                # If iterator exists
+                x, y = next(self.pooled_loader_iter)
+            except:
+                # Reset iterator if exhausted or not initialized
+                self.pooled_loader_iter = iter(self.pooled_loader)
+                x, y = next(self.pooled_loader_iter)
 
-            total_loss /= num_batches
+            x, y = x.to(self.device), y.to(self.device)
 
-            # Cosine regularization (during optimization)
+            # Forward pass with perturbed weights
+            logits = functional_call(model, perturbed_params, (x,))
+            loss_ce = F.cross_entropy(logits, y)
+            loss_nce = -loss_ce  # maximize misclassification
+
+            # === Step 4: Cosine distance penalty ===
             cos_sim = F.cosine_similarity(delta, target_direction, dim=0)
             cos_dist = 1.0 - cos_sim
-            total_loss += lambda_cos * cos_dist
 
-            # Backward pass
+            # Apply penalty only if cos_dist > target threshold
+            cos_penalty = F.relu(cos_dist - target_cos_dist)
+
+            total_loss = loss_nce + lambda_cos * cos_penalty
+
+            # Total loss
+            total_loss = loss_nce + lambda_cos * cos_dist
+
             total_loss.backward()
-
-            grad_norm = delta.grad.norm().item() if delta.grad is not None else None
-            print(f"[Step {step+1}] Loss: {total_loss.item():.4f} | CosDist: {cos_dist.item():.4f} | ||Δ||: {delta.norm().item():.4f} | GradNorm: {grad_norm:.4f}")
-
             optimizer.step()
 
-            # Post-step projection to enforce cosine and L2 norm
+            # === Step 5: Projection ===
             with torch.no_grad():
-                # Project delta to exact target cosine distance
+                # Project to exact cosine from target direction
+                target_cos_sim = torch.clamp(torch.tensor(1.0 - target_cos_dist, device=delta.device), -1.0, 1.0)
                 delta.data = self.project_to_exact_cosine(
                     delta.data,
                     target_direction,
-                    target_cos_sim=1.0 - scaling_cos_dist
+                    target_cos_sim
                 )
 
-                # Enforce L2 constraint
-                norm = delta.norm()
-                if norm > 1e-6:
+                # Project to L2 ball
+                norm = delta.data.norm(p=2)
+                if norm > epsilon:
                     delta.data = delta.data / norm * epsilon
 
         return delta.detach()
