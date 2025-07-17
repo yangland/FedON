@@ -1,4 +1,4 @@
-cuda_device: 4
+cuda_device: 0
 if_series: True
 
 # defense methods
@@ -21,11 +21,11 @@ m: 20 # malicious clients
 clients_per_iter: 10
 fl_class_num: 10
 fl_task: 'fmnist'
-c_model: "SimpleCNN_28" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
+c_model: "ResNet8_Light_one_channel" #  "ConvNet", "SimpleCNN_28", "LeNet5", "MobileNetV2_28"
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
-dirichlet_alphas: [0.1, 0.5]
+dirichlet_alphas: [0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: ['none',  'MPAF',  'label_perturbation', 'reverse_grad', 'fang', 'MinMax', 'MinSum', 'LIE', 'FedOda', 'FedOda']
+attack_methods: [ 'FedOda', 'FedOda', 'FedOda']
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 
@@ -50,6 +50,32 @@ fedoda:
   increase_factor: 1.05
   threshold: 0.5
 
-
-
 clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
+rl_mode: "PCAC"  # "RANDOM"
+
+attack:
+  mode: PGD
+  pgd_steps: 20
+  pgd_lr: 0.1
+  alpha: 0.1
+  lambda_cos: 0.1
+  retry_limit: 5
+  harm_threshold: 0.0
+  epsilon_growth: 1.0
+  cos_growth: 0.9
+
+  # PCAC exploration parameters
+  exploration_mode: noise     # or "epsilon"
+  epsilon: 1.0
+  epsilon_min: 0.05
+  epsilon_decay: 0.995
+
+  # PCAC noise adaptation parameters
+  noise_init: 0.5
+  noise_min: 0.05
+  noise_max: 0.5
+  noise_decay: 0.9
+  noise_growth: 1.1
+  noise_alpha: 0.05
+
+

@@ -1727,7 +1727,7 @@ class FedOda:
                 reward_scalar = np.dot(reward_vector, preference_vector)
 
                 # --- Normalize reward for stability (optional scale-up) ---
-                reward_scalar = np.clip(reward_scalar * 2.0, 0.0, 1.0)  # Scale and clamp to [0, 1]
+                reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)  # Scale and clamp to [0, 1]
 
                 # --- Update noise_std based on reward ---
                 self.pcac_agent.update_noise_std(reward_scalar)
@@ -1747,6 +1747,8 @@ class FedOda:
                     s_next=state,
                     preference_vector=self.pcac_preference_vector
                 )
+                
+                # train the agent
                 self.pcac_agent.update()
             else:
                 # First iteration: can't compute rewards that depend on prev_acc

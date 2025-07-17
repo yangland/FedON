@@ -1,10 +1,10 @@
-cuda_device: 2
+cuda_device: 1
 if_series: False
 
 # defense methods
 defense: "AGGR" # "AGGR", "FedEval"
 # "geometric_median", "coordinate_wise_median", "fedavg", "fltrust", 'trimmed_mean', "krum", 'normbound', "multi-krum"
-aggr: "fedavg" # "multi-krum", "fedavg", "fltrust"
+aggr: 'fltrust' # "multi-krum", "fedavg", "fltrust"
 aggr_c_lr: 1 # 0.75
 aggr_g_lr: 1 # 1.0
 fltrust_root_iid: True # False, True
@@ -72,9 +72,9 @@ attack:
   epsilon_decay: 0.995
 
   # PCAC noise adaptation parameters
-  noise_init: 0.4
+  noise_init: 0.5
   noise_min: 0.05
-  noise_max: 0.4
+  noise_max: 0.5
   noise_decay: 0.9
   noise_growth: 1.1
-  noise_alpha: 0.1
+  noise_alpha: 0.05

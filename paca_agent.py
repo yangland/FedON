@@ -155,8 +155,6 @@ class PCACAgent:
 
 
 
-
-
     def update_epsilon(self):
         if self.exploration_mode == 'epsilon':
             self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
