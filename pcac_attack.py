@@ -57,7 +57,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     
     # ----> L2 scaling
     scaling_l2 = linear_map_from_tanh(norm_scaling_l2.item(), 0.5, 20.0)
-    scaling_cos = log2_map_from_tanh(norm_scaling_cos.item(), 0, 2.0)
+    scaling_cos = linear_map_from_tanh(norm_scaling_cos.item(), 0.0, 2.0)
     
     # ----> Cosine upper bound
     cos_dist_high_bound = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance/2)) # TODO: change to min(2.0, cos_dist_mali_benign)
