@@ -1,9 +1,9 @@
 from models.mnist_6l import Mnist_6L
 from models.convnet import ConvNet
 from models.cifar10_18l import Cifar10_18L 
-from models.resnet import ResNet18, ResNet14_Light, ResNet8_Light, ResNet20, ResNet8_Light_one_channel, ResNet32, ResNet44, bn_to_gn
+from models.resnet import ResNet18, ResNet14_Light, ResNet8_Light, ResNet20, ResNet18_Light, ResNet8_Light_one_channel, ResNet32, ResNet44, bn_to_gn
 from models.vgg import VGG13, VGG16, VGG11, VGG13_32
-from models.efficientnet import EfficientNetB0
+from torchvision.models import efficientnet_b0
 import torchvision.models as models
 import torch.nn as nn
 from torchvision.models.squeezenet import Fire
@@ -20,7 +20,8 @@ def get_model(model_name):
         "VGG13": VGG13,
         "VGG13_32": VGG13_32, # wrks for cifar10
         "VGG16": VGG16,
-        "EfficientNetB0": EfficientNetB0, 
+        "EfficientNetB0": EfficientNetB0,
+        "EfficientNetB0_32": EfficientNetB0_32,
         "MobileNetV2": MobileNetV2,
         "MobileNetV2_32": MobileNetV2_32, # not working for cifar10
         "SqueezeNet": SqueezeNet,
@@ -32,7 +33,8 @@ def get_model(model_name):
         "ResNet14_Light": ResNet14_Light, # for cifar100 works
         "ResNet8_Light": ResNet8_Light,
         "ResNet8_Light_one_channel":ResNet8_Light_one_channel,
-        "ResNet20": ResNet20
+        "ResNet20": ResNet20,
+        "ResNet18_Light": ResNet18_Light, # for cifar10
     }
 
     if model_name not in model_dict:
@@ -80,6 +82,53 @@ class MobileNetV2_32(nn.Module):
 
     def forward(self, x):
         return self.model(x)
+
+# Modified EfficientNetB0 for CIFAR-10
+class EfficientNetB0_32(nn.Module):
+    def __init__(self, num_classes=10, use_groupnorm=True):
+        super(EfficientNetB0_32, self).__init__()
+
+        # Load EfficientNetB0 backbone
+        self.base = efficientnet_b0(weights=None)
+
+        # Modify the first conv layer to work with 32x32 images (reduce stride from 2→1)
+        self.base.features[0][0].stride = (1, 1)
+
+        # Replace BatchNorm with GroupNorm if needed
+        if use_groupnorm:
+            bn_to_gn(self.base)
+
+        # Replace classifier
+        self.base.classifier = nn.Sequential(
+            nn.Linear(in_features=1280, out_features=num_classes)
+        )
+
+    def forward(self, x):
+        return self.base(x)
+
+
+class EfficientNetB0(nn.Module):
+    def __init__(self, num_classes=10, use_groupnorm=True):
+        super(EfficientNetB0, self).__init__()
+        # Load pretrained EfficientNet-B0 and remove the classifier
+        self.base = efficientnet_b0(weights=None)  # or use weights=EfficientNet_B0_Weights.DEFAULT for pretrained
+        self.base.classifier = nn.Identity()  # remove the original classifier
+
+        # Replace BatchNorm with GroupNorm if needed
+        if use_groupnorm:
+            bn_to_gn(self.base)
+
+        # Replace with custom classifier
+        self.classifier = nn.Sequential(
+            nn.Linear(1280, num_classes)  # 1280 is the output feature size of EfficientNet-B0
+        )
+
+    def forward(self, x):
+        x = self.base.features(x)
+        x = self.base.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
 
 class MobileNetV2_28(nn.Module):
