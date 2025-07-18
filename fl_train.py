@@ -178,7 +178,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                                                noniid_type='label_skew', 
                                                non_iid_param=1.0,
                                                fl_class_num=fl_class_num, 
-                                               sample_size=100)
+                                               sample_size=fl_class_num*10)
 
     
     # malicious attack data modification
