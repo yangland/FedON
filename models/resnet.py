@@ -383,6 +383,7 @@ class ResNet8_Light_one_channel(nn.Module):
 
 
 
+
 def bn_to_gn(module, max_groups=16):
     for name, child in module.named_children():
         if isinstance(child, nn.BatchNorm2d):
