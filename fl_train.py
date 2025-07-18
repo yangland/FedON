@@ -173,12 +173,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
 
     if defense == 'AGGR' and aggr == 'fltrust':
         # alwasy IID rootdataset for FLTrust
-        root_ds = create_fl_trust_root_dataset(fl_train,
-                                               fltrust_root_iid,
-                                               noniid_type='label_skew', 
-                                               non_iid_param=1.0,
-                                               fl_class_num=fl_class_num, 
-                                               sample_size=fl_class_num*10)
+        root_ds = create_fl_trust_root_dataset(
+            fl_train,
+            per_class_sample=10 # per class
+        )
+
 
     
     # malicious attack data modification
@@ -400,10 +399,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             elif aggr == 'fltrust':
                 # train server with root dataset
                 server_c_grad = fltrust_server_iteration(iter, 
-                                                        c_epochs=1,
+                                                        c_epochs=3,
                                                         root_ds=root_ds, 
                                                         mco_dict=mco_dict, 
-                                                        batch_size=5, 
+                                                        batch_size=16, 
                                                         device=device)
                 
                 

@@ -21,6 +21,7 @@ from PIL import Image
 from collections import defaultdict
 from torchvision.datasets import ImageFolder
 import os
+from collections import Counter
 
 last_percent_reported = None
 
@@ -281,40 +282,41 @@ def to_torch_ds(ds, transform):
         torch_ds.append([transform(img), ds[i]['label']])
     return torch_ds
 
-def create_fl_trust_root_dataset(fl_train, fltrust_root_iid, noniid_type, non_iid_param, fl_class_num, sample_size):
+
+
+def create_fl_trust_root_dataset(fl_train, per_class_sample):
+    from collections import Counter
+    import torch
+    import random
+
+    # Extract all targets
     train_targets = [x[1] for x in fl_train]
-    if fltrust_root_iid:
-        indices = random.sample(list(range(len(fl_train))), sample_size)    
-    else:
-        if noniid_type == "p-degree":
-            # p_degree non iid, same p_degree as FL clients
-            p_degree = non_iid_param
-            selected_class = random.choice(list(range(fl_class_num)))
-            indices = []
-            
-            for class_id in range(fl_class_num):
-                idxs = [idx for idx, target in enumerate(train_targets) if target == class_id]
-                if class_id == selected_class:
-                    sub_sample_size = math.floor(sample_size * p_degree)
-                else:
-                    sub_sample_size = math.floor(sample_size * (1-p_degree)/(fl_class_num-1))
-                indices += random.sample(idxs, sub_sample_size)
-        elif noniid_type == 'label_skew':
-            # print("fltrust noniid label skew")
-            indices = []
-            # print("non_iid_param", non_iid_param)
-            num_selected = int(non_iid_param * fl_class_num) # noniid_param = 1.0, select all classes
-            selected_classes = random.sample(list(range(fl_class_num)), k = num_selected) # all classes
-            sub_sample_size = int(sample_size/num_selected)
-            # print("sub_sample_size", sub_sample_size)
-            # print("selected_classes", selected_classes)
-            for label in selected_classes:
-                label_indices = [idx for idx, target in enumerate(train_targets) if target == label]
-                idxs = random.sample(label_indices, sub_sample_size)
-                indices += idxs
+
+    # Get all unique class labels
+    all_labels = sorted(set(train_targets))
+    fl_class_num = len(all_labels)
+
+    # Sample fixed number of examples per class
+    indices = []
+    for label in all_labels:
+        label_indices = [idx for idx, target in enumerate(train_targets) if target == label]
+        if len(label_indices) < per_class_sample:
+            raise ValueError(f"Not enough samples for class {label} (needed {per_class_sample}, found {len(label_indices)})")
+        sampled = random.sample(label_indices, per_class_sample)
+        indices += sampled
+
+    # Create subset
     ds = torch.utils.data.Subset(fl_train, indices)
 
+    # Print label distribution
+    label_counts = Counter([fl_train[i][1] for i in indices])
+    print("Label distribution in FLTrust root dataset:")
+    for label in sorted(label_counts):
+        print(f"  Class {label}: {label_counts[label]} samples")
+
     return ds
+
+
 
 
 def quantity_based_label_dist_skew(fl_class_num, client_num, label_skew_alpha):
