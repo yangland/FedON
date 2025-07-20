@@ -168,7 +168,7 @@ class SqueezeNet(nn.Module):
 
 
 class SqueezeNet1_1_32(nn.Module):
-    def __init__(self, num_classes=10):
+    def __init__(self, num_classes=10, use_groupnorm=True):
         super(SqueezeNet1_1_32, self).__init__()
 
         # Load base model without pretrained weights
@@ -192,6 +192,9 @@ class SqueezeNet1_1_32(nn.Module):
         )
 
         self.num_classes = num_classes
+        
+        if use_groupnorm:
+            bn_to_gn(self.model)
 
     def forward(self, x):
         x = self.model(x)
