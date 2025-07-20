@@ -399,7 +399,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
             elif aggr == 'fltrust':
                 # train server with root dataset
                 server_c_grad = fltrust_server_iteration(iter, 
-                                                        c_epochs=3,
+                                                        c_epochs=1,
                                                         root_ds=root_ds, 
                                                         mco_dict=mco_dict, 
                                                         batch_size=16, 

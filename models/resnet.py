@@ -382,14 +382,35 @@ class ResNet8_Light_one_channel(nn.Module):
         return out
 
 
+# def bn_to_gn(module, max_groups=16):
+#     for name, child in module.named_children():
+#         if isinstance(child, nn.BatchNorm2d):
+#             num_channels = child.num_features
 
+#             # Find the largest num_groups that divides num_channels and ≤ max_groups
+#             for num_groups in reversed(range(1, max_groups + 1)):
+#                 if num_channels % num_groups == 0:
+#                     gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
+#                     setattr(module, name, gn)
+#                     break
+#             else:
+#                 raise ValueError(f"Cannot find valid num_groups for GroupNorm with num_channels={num_channels}")
+
+#         else:
+#             bn_to_gn(child, max_groups)
 
 def bn_to_gn(module, max_groups=16):
-    for name, child in module.named_children():
+    # Make a static copy of the children to avoid modifying the dictionary during iteration
+    children = list(module.named_children())
+
+    for name, child in children:
         if isinstance(child, nn.BatchNorm2d):
             num_channels = child.num_features
 
-            # Find the largest num_groups that divides num_channels and ≤ max_groups
+            # Safely remove the old module (BatchNorm) and its buffers
+            delattr(module, name)
+
+            # Replace with compatible GroupNorm
             for num_groups in reversed(range(1, max_groups + 1)):
                 if num_channels % num_groups == 0:
                     gn = nn.GroupNorm(num_groups=num_groups, num_channels=num_channels)
@@ -397,6 +418,7 @@ def bn_to_gn(module, max_groups=16):
                     break
             else:
                 raise ValueError(f"Cannot find valid num_groups for GroupNorm with num_channels={num_channels}")
-
         else:
+            # Recursively apply to child modules
             bn_to_gn(child, max_groups)
+
