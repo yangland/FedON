@@ -652,9 +652,17 @@ def create_fl_models(client_num, device, c_model_name, c_lr, server_optim_c_lr, 
     return mco_dict
 
 
+def strip_bn_buffers(state_dict):
+    return {
+        k: v for k, v in state_dict.items()
+        if all(x not in k for x in ['running_mean', 'running_var', 'num_batches_tracked'])
+    }
+
+
 def send_main_to_clients(client_num, mco_dict, device):
     with torch.no_grad():
         server_state = mco_dict[-1]["c_model"].state_dict()
+        server_state = strip_bn_buffers(server_state)  #  Strip BN
         # Move server state to CPU first
         server_state_cpu = {k: v.cpu() for k, v in server_state.items()}
         
