@@ -36,7 +36,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
         # === Apply Ablation Configurations ===
     if fedoda.ablation_mode == "fix_degree":
         # Fix cosine distance to baseline (no directional constraint)
-        norm_scaling_cos = torch.tensor(-1.0).to(agent.device)  # action[1] = 0
+        norm_scaling_cos = torch.tensor(0).to(agent.device)  # action[1] = 0
 
     elif fedoda.ablation_mode == "fix_l2":
         # Fix L2 scaling so scaling_l2 == 3.0

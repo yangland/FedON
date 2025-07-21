@@ -1,4 +1,5 @@
 cuda_device: 2
+cuda_device: 2
 if_series: True
 
 # defense methods
@@ -80,3 +81,4 @@ attack:
   noise_growth: 1.1
   noise_alpha: 0.05
 
+  ablation_mode: "fix_degree" # "fix_l2", "fix_degree" 

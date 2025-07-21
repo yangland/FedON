@@ -80,3 +80,5 @@ attack:
   noise_decay: 0.9
   noise_growth: 1.1
   noise_alpha: 0.05
+
+  ablation_mode: "fix_degree" # "fix_l2", "fix_degree" 
