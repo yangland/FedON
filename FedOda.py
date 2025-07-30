@@ -1725,7 +1725,7 @@ class FedOda:
                 reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)  # Scale and clamp to [0, 1]
 
                 # --- Update noise_std based on reward ---
-                self.pcac_agent.update_noise_std(reward_scalar)
+                self.pcac_agent.update_noise_std(reward_scalar, reward_threshold=0.01)
                 self.pcac_agent.update_epsilon()
 
                 # --- Log for debugging ---

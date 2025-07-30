@@ -92,7 +92,7 @@ class PCACAgent:
         self.prev_action = torch.zeros(action_dim).to(self.device)  # initialize to 0
 
 
-    def update_noise_std(self, reward_scalar, reward_threshold=0.01):
+    def update_noise_std_old(self, reward_scalar, reward_threshold=0.01):
         if self.exploration_mode != 'noise':
             return
 
@@ -119,6 +119,42 @@ class PCACAgent:
             self.logger.info(
                 f"[PCAC][Noise] reward: {reward_scalar:.4f}, EMA: {self.reward_ema:.4f}, "
                 f"delta: {delta:.4f}, noise_std: {self.noise_std:.4f}"
+            )
+
+
+    def update_noise_std(self, reward_scalar, reward_threshold=0.01):
+        if self.exploration_mode != 'noise':
+            return
+
+        # Clip reward to [0, 1] for stability
+        reward_scalar = float(np.clip(reward_scalar, 0.0, 1.0))
+
+        # Update EMA of reward
+        self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
+
+        # Compute delta
+        delta = reward_scalar - self.reward_ema
+
+        # Only update if change is significant
+        if delta > reward_threshold:
+            # Reward increasing → reduce noise (exploit)
+            self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
+
+        elif delta < -reward_threshold:
+            # Reward decreasing → adaptively increase noise (explore)
+            # Scale growth factor based on the magnitude of delta
+            delta_magnitude = abs(delta)
+            # Clamp the multiplier between 1.0 and some multiple of noise_growth
+            dynamic_growth = min(self.noise_growth ** (1 + delta_magnitude * 5), 2.0)
+            self.noise_std = min(self.noise_std_max, self.noise_std * dynamic_growth)
+
+        # else: delta within threshold → no change
+
+        if self.logger:
+            self.logger.info(
+                f"[PCAC][Noise] reward: {reward_scalar:.4f}, EMA: {self.reward_ema:.4f}, "
+                f"delta: {delta:.4f}, dynamic_growth: {dynamic_growth if delta < -reward_threshold else 'N/A'}, "
+                f"noise_std: {self.noise_std:.4f}"
             )
 
 
