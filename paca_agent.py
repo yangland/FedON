@@ -92,18 +92,34 @@ class PCACAgent:
         self.prev_action = torch.zeros(action_dim).to(self.device)  # initialize to 0
 
 
-    def update_noise_std(self, reward_scalar):
-        if self.exploration_mode == 'noise':
-            reward_scalar = float(reward_scalar)
-            reward_scalar = np.clip(reward_scalar, 0.0, 1.0)
+    def update_noise_std(self, reward_scalar, reward_threshold=0.01):
+        if self.exploration_mode != 'noise':
+            return
 
-            self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
-            delta = reward_scalar - self.reward_ema
+        # Clip reward to [0, 1] for stability
+        reward_scalar = float(np.clip(reward_scalar, 0.0, 1.0))
 
-            if delta > 0:
-                self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
-            else:
-                self.noise_std = min(self.noise_std_max, self.noise_std * self.noise_growth)
+        # Exponential Moving Average of Reward
+        self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
+
+        # Compute reward delta
+        delta = reward_scalar - self.reward_ema
+
+        # Only update noise if delta passes threshold
+        if delta > reward_threshold:
+            # Reward increasing → reduce noise (exploit)
+            self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
+        elif delta < -reward_threshold:
+            # Reward decreasing → increase noise (explore)
+            self.noise_std = min(self.noise_std_max, self.noise_std * self.noise_growth)
+        # else: delta is too small → keep current noise_std
+
+        # Optional: log the noise adjustment
+        if self.logger:
+            self.logger.info(
+                f"[PCAC][Noise] reward: {reward_scalar:.4f}, EMA: {self.reward_ema:.4f}, "
+                f"delta: {delta:.4f}, noise_std: {self.noise_std:.4f}"
+            )
 
 
 
