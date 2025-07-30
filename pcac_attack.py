@@ -16,16 +16,21 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
                             ).item()
     
     acc_delta = curr_acc - prev_acc
-    model_norm_delta = 0.0
-    cos_dist_rate = 1.0
-    if fedoda.prev_server_model is not None:
-        prev_model_norm = get_model_l2_norm(fedoda.prev_server_model)
-        curr_model_norm = get_model_l2_norm(fedoda.server_model)
-        model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm) / prev_model_norm))
 
+    if fedoda.prev_server_model is not None:
+        # prev_model_norm = get_model_l2_norm(fedoda.prev_server_model)
+        # curr_model_norm = get_model_l2_norm(fedoda.server_model)
+        # model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm) / prev_model_norm))
+        
+        cos_dist_mb = cos_dist_mali_benign 
         cos_dist_rate = cos_dist_mali_benign / (avg_cos_distance + 1e-8)
- 
-    state = [curr_acc, acc_delta,  cos_dist_rate] # model_norm_delta,
+    else:
+        cos_dist_mb = 2.0
+        
+    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance]
+    prev_action_np = fedoda.pcac_agent.prev_action.detach().cpu().numpy()
+    state += prev_action_np.tolist()
+
     state_tensor = torch.tensor(state, dtype=torch.float32).to(agent.device)
 
 
@@ -35,8 +40,8 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     
         # === Apply Ablation Configurations ===
     if fedoda.ablation_mode == "fix_degree":
-        # Fix cosine distance to baseline (no directional constraint)
-        norm_scaling_cos = torch.tensor(2.0).to(agent.device) 
+        # Fix cosine distance to baseline, opposite of benign
+        norm_scaling_cos = torch.tensor(1.0).to(agent.device) 
 
     elif fedoda.ablation_mode == "fix_l2":
         # Fix L2 scaling so scaling_l2 == 3.0
@@ -60,25 +65,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     scaling_cos = linear_map_from_tanh(norm_scaling_cos.item(), 0.0, 2.0)
     
     # ----> Cosine upper bound
-    cos_dist_high_bound = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance/2)) # TODO: change to min(2.0, cos_dist_mali_benign)
-    # cos_dist_high_bound = max(0.0, min(2.0, cos_dist_mali_benign))
-
-    # # ----> Updated 0-1 cosine mapping
-    # scaling_cos = cosine_mapping_from_0_to_1(norm_scaling_cos.item(), max_val=cos_dist_high_bound)
-    
-    # -- Use the new symmetric log mapping
-    # scaling_cos = cosine_mapping_symmetric_log(
-    #     action_val=norm_scaling_cos.item(),
-    #     max_pos_val=cos_dist_high_bound,
-    #     cos_dist_mali_benign=cos_dist_mali_benign,  # used to compute 2 - cos_dist
-    #     log_base=4.0,
-    #     start_at=0.01
-    # )
-    
-    # scaling_cos = cosine_mapping_symmetric_linear(action_val=norm_scaling_cos.item(), 
-    #                                         max_pos_val=cos_dist_high_bound, 
-    #                                         cos_dist_mali_benign=cos_dist_mali_benign, 
-    #                                         start_at=0.01)
+    # cos_dist_high_bound = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance/2)) # TODO: change to min(2.0, cos_dist_mali_benign)
 
     # ----> Apply attack
     fedoda.scaling_l2 = scaling_l2

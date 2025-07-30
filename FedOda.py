@@ -99,18 +99,11 @@ class FedOda:
         
         if self.rl_mode == "PCAC":
             self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
-            # self.pcac_agent = PCACAgent(
-            #     state_dim=3,     # same as MOQ
-            #     action_dim=2,    # norm_scaling_l2, norm_scaling_cos
-            #     reward_dim=2,    # r1, r2
-            #     device=self.device,
-            #     logger=logger,
-                
-            # )
+
             self.attack_config = attack_config or {} 
             
             self.pcac_agent = PCACAgent(
-                state_dim=3,
+                state_dim=6,
                 action_dim=2,
                 reward_dim=2,
                 device=device,
@@ -132,8 +125,10 @@ class FedOda:
                 alpha=self.attack_config.get('noise_alpha', 0.1),
 
                 logger=logger
-            )
+                )
             
+            self.pcac_update_steps = self.attack_config.get('PCAC_update_steps_per_round', 2)
+    
             self.prev_state = None
             self.prev_action = None
             self.prev_acc = None
@@ -1748,8 +1743,10 @@ class FedOda:
                     preference_vector=self.pcac_preference_vector
                 )
                 
-                # train the agent
-                self.pcac_agent.update()
+                # train the PCAC agent
+                for _ in range(self.pcac_update_steps):
+                    self.pcac_agent.update()
+
             else:
                 # First iteration: can't compute rewards that depend on prev_acc
                 r1 = 0.0

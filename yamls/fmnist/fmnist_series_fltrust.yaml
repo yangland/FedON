@@ -1,4 +1,4 @@
-cuda_device: 1
+cuda_device: 2
 if_series: True
 
 # defense methods
@@ -25,7 +25,7 @@ c_model: "ResNet8_Light_one_channel" #  "ConvNet", "SimpleCNN_28", "LeNet5", "Mo
 noniid_type: 'dirichlet' # "p-degree", "label_skew"
 dirichlet_alphas: [0.5]
 # ['none',  'MPAF',  'MinMax', 'MinSum', 'LIE', 'label_perturbation', 'reverse_grad', 'fang',  'FedOda']
-attack_methods: [ 'FedOda', 'FedOda', 'FedOda']
+attack_methods: ['FedOda', 'FedOda', 'FedOda','FedOda', 'FedOda']
 # only for reverse_grad, backdoor 
 attack_magnitude: 1
 

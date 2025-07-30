@@ -89,6 +89,7 @@ class PCACAgent:
         self.epsilon_min = epsilon_min
         self.epsilon_decay = epsilon_decay
 
+        self.prev_action = torch.zeros(action_dim).to(self.device)  # initialize to 0
 
 
     def update_noise_std(self, reward_scalar):
@@ -130,7 +131,7 @@ class PCACAgent:
 
             print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
             print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
-
+            self.prev_action = noisy_action.detach()
             return noisy_action
 
         elif self.exploration_mode == 'epsilon':
@@ -141,6 +142,7 @@ class PCACAgent:
                 random_action[1] = torch.FloatTensor(1).uniform_(-1.0, 1.0).to(self.device)
 
                 print(f"[PCAC] random_action (ε={self.epsilon:.4f}): {random_action.cpu().numpy()}")
+                self.prev_action = random_action.detach()
                 return random_action
             else:
                 # Use actor output
@@ -148,6 +150,7 @@ class PCACAgent:
                 actor_output[1] = torch.clamp(actor_output[1], -1.0, 1.0)
 
                 print(f"[PCAC] actor_output (ε={self.epsilon:.4f}): {actor_output.cpu().numpy()}")
+                self.prev_action = actor_output.detach()
                 return actor_output
 
         else:
