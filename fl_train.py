@@ -541,9 +541,9 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if iter % 10 == 0:  # Cleanup every 10 iterations
             torch.cuda.empty_cache()
 
-    # save server models
-    path_c_model=f"{exp_dir}/c_model_{iter}.pt"
-    torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
+    # save server models if needed
+    # path_c_model=f"{exp_dir}/c_model_{iter}.pt"
+    # torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
 
     # Extract FedOda attack metrics (if applicable)
     if foda:

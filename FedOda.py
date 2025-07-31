@@ -1727,10 +1727,11 @@ class FedOda:
                 # --- Update noise_std based on reward ---
                 self.pcac_agent.update_noise_std(reward_scalar, reward_threshold=0.01)
                 self.pcac_agent.update_epsilon()
-
+                action_diff = torch.norm(acc_curr - self.prev_action).item()
                 # --- Log for debugging ---
                 self.logger.info(
                     f"[FedOda] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
+                    f"[PCAC] ΔAction norm: {action_diff:.4f},"
                     f"[FedOda] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
                 )
 

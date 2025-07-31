@@ -181,8 +181,8 @@ class PCACAgent:
             noisy_action[0] = torch.clamp(noisy_action[0], -1.0, 1.0)
             noisy_action[1] = torch.clamp(noisy_action[1], -1.0, 1.0)
 
-            print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
-            print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
+            # print(f"[PCAC] actor_output: {actor_output.cpu().numpy()}, noise_std: {self.noise_std:.4f}")
+            # print(f"[PCAC] noisy_action: {noisy_action.cpu().numpy()}")
             self.prev_action = noisy_action.detach()
             return noisy_action
 
@@ -243,6 +243,9 @@ class PCACAgent:
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        
+        # ✅ Add gradient clipping here
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=5.0)
         self.critic_optimizer.step()
 
         # --- Actor update ---
@@ -250,7 +253,12 @@ class PCACAgent:
         actor_loss = -torch.mean(torch.sum(self.critic(s, p, new_actions) * p, dim=1))  # scalarized reward
 
         self.actor_optimizer.zero_grad()
+        
         actor_loss.backward()
+
+        # ✅ Optional: clip actor gradients too
+        torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=2.0)        
+        
         self.actor_optimizer.step()
 
         if self.logger:

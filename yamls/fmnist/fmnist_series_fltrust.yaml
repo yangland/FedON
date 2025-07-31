@@ -1,4 +1,4 @@
-cuda_device: 7
+cuda_device: 3
 if_series: True
 
 # defense methods
@@ -54,7 +54,7 @@ clients_eval_mode: "cross-eval" # "self-eval", "cross-eval"
 rl_mode: "PCAC"  # "RANDOM"
 
 attack:
-  mode: PGD
+  mode: PROJ
   pgd_steps: 20
   pgd_lr: 0.1
   alpha: 0.1
