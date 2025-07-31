@@ -6,6 +6,7 @@ import torch.optim as optim
 import numpy as np
 import random
 import torch.nn.functional as F
+from copy import deepcopy
 
 class PCACActor(nn.Module):
     def __init__(self, state_dim, pref_dim, action_dim):
@@ -67,6 +68,7 @@ class PCACAgent:
 
         self.actor = PCACActor(state_dim, reward_dim, action_dim).to(device)
         self.critic = PCACCritic(state_dim, reward_dim, action_dim, reward_dim).to(device)
+        self.target_critic = deepcopy(self.critic)
 
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
@@ -219,6 +221,10 @@ class PCACAgent:
         if len(self.memory) > 10000:
             self.memory.pop(0)
 
+    def update_target_critic(self, tau=0.005):
+        for target_param, param in zip(self.target_critic.parameters(), self.critic.parameters()):
+            target_param.data.copy_(tau * param.data + (1.0 - tau) * target_param.data)
+
     def update(self):
         if len(self.memory) < self.batch_size:
             return
@@ -232,11 +238,18 @@ class PCACAgent:
         s_next = torch.tensor(s_next, dtype=torch.float32).to(self.device)
         p = torch.stack([pi.to(self.device) for pi in p])
 
+        # Normalize rewards (optional but helps with critic stability)
+        r_mean = r.mean(dim=0, keepdim=True)
+        r_std = r.std(dim=0, keepdim=True) + 1e-6
+        r_normalized = (r - r_mean) / r_std
+
         # --- Critic update ---
         with torch.no_grad():
             next_action = self.actor(s_next, p)
-            q_next = self.critic(s_next, p, next_action)  # [B, reward_dim]
-            target_q = r + self.gamma * q_next
+            # q_next = self.critic(s_next, p, next_action)  # [B, reward_dim]
+            q_next = self.target_critic(s_next, p, next_action)
+            # target_q = r + self.gamma * q_next
+            target_q = r_normalized + self.gamma * q_next
 
         q_pred = self.critic(s, p, a)
         critic_loss = nn.MSELoss()(q_pred, target_q)
@@ -260,6 +273,7 @@ class PCACAgent:
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), max_norm=2.0)        
         
         self.actor_optimizer.step()
-
+        self.update_target_critic()
+        
         if self.logger:
             self.logger.info(f"[PCAC] Actor loss: {actor_loss.item():.4f}, Critic loss: {critic_loss.item():.4f}")

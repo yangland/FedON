@@ -56,7 +56,7 @@ rl_mode: "PCAC"  # "RANDOM"
 attack:
   mode: PGD
   pgd_steps: 20
-  pgd_lr: 0.1
+  pgd_lr: 0.01
   alpha: 0.1
   lambda_cos: 0.1
   retry_limit: 5
@@ -71,11 +71,11 @@ attack:
   epsilon_decay: 0.995
 
   # PCAC noise adaptation parameters
-  noise_init: 0.5
+  noise_init: 1.0
   noise_min: 0.05
-  noise_max: 0.5
+  noise_max: 1.2
   noise_decay: 0.9
-  noise_growth: 1.1
+  noise_growth: 1.2
   noise_alpha: 0.05
 
-  PCAC_update_steps_per_round: 5
+  PCAC_update_steps_per_round: 2
