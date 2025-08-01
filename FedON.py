@@ -53,6 +53,7 @@ class FedON:
         self.total_malicious = total_malicious
         self.fl_mali_data_dict = fl_mali_data_dict
         self.current_s_m = None
+        self.prev_s_m = 0
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []

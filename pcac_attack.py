@@ -26,8 +26,8 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     else:
         cos_dist_mb = 2.0
         
-    malicious_ratio = fedoda.current_s_m / fedoda.total_malicious if fedoda.total_malicious > 0 else 0.0
-    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance, malicious_ratio]
+    malicious_ratio_prev = fedoda.prev_s_m / fedoda.total_malicious if fedoda.total_malicious > 0 else 0.0
+    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance, malicious_ratio_prev]
     prev_action_np = fedoda.pcac_agent.prev_action.detach().cpu().numpy()
     state += prev_action_np.tolist()
 
