@@ -568,7 +568,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
             mali_labels = [m_label1, m_label2]  
         elif attack_method == 'none':
             mali_labels = []
-        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedON']:
+        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedOda']:
             mali_labels = list(range(class_num))
         else:
             print("attack_method unknown")
