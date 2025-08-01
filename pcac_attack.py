@@ -26,8 +26,8 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
     else:
         cos_dist_mb = 2.0
         
-    malicious_select_ratio = fedoda.current_s_m / fedoda.total_malicious if fedoda.total_malicious > 0 else 0.0
-    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance, malicious_select_ratio]
+    malicious_ratio = fedoda.current_s_m / fedoda.total_malicious if fedoda.total_malicious > 0 else 0.0
+    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance, malicious_ratio]
     prev_action_np = fedoda.pcac_agent.prev_action.detach().cpu().numpy()
     state += prev_action_np.tolist()
 
@@ -62,7 +62,7 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
         norm_scaling_l2 = torch.tensor(fixed_action0).to(agent.device)
 
     if fedoda.ablation_mode:
-        fedoda.logger.info(f"[FedOda][Ablation] Mode: {fedoda.ablation_mode}, "
+        fedoda.logger.info(f"[FedON][Ablation] Mode: {fedoda.ablation_mode}, "
                         f"Action Override → L2: {norm_scaling_l2.item():.4f}, Cos: {norm_scaling_cos.item():.4f}")
 
     
@@ -217,4 +217,4 @@ def log_cos_distance_alignment(mali_direction, benign_direction, target_cos_dist
     cos_dist_real_mb = 1.0 - cos_sim_real_mb
 
     # 3. Desired cosine distance is now an absolute target w.r.t. Δ_b
-    print(f"[FedOda] CosDist Δ_g~Δ_b: {cos_dist_gm_gb:.4f}, CosDist Δₘ~Δ_b: target = {target_cos_dist:.4f} | actual = {cos_dist_real_mb:.4f}")
+    print(f"[FedON] CosDist Δ_g~Δ_b: {cos_dist_gm_gb:.4f}, CosDist Δₘ~Δ_b: target = {target_cos_dist:.4f} | actual = {cos_dist_real_mb:.4f}")

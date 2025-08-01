@@ -132,7 +132,7 @@ attack_magnitude_mapping = {
     'MinSum': 1,
     'LIE': 1,
     'dba': 3,
-    'FedOda': 1
+    'FedON': 1
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
@@ -152,7 +152,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     
     if attack_method == 'FedOda':
         if FedOda_class is None:
-            raise ValueError("FedOda_class is not initialized.")
+            raise ValueError("FedON_class is not initialized.")
 
         foda_update_dict, malicious_update = \
             FedOda_class.attack(
@@ -205,7 +205,7 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
             for client_id in malicious_client_ids:
                 c_grad_dict[client_id] = malicious_updates[client_id]
         elif attack_method == 'FedOda':
-            # logger.info("Applying FedOda attack")
+            # logger.info("Applying FedON attack")
             c_grad_dict[client_id] = foda_update_dict
         else:
             logger.info(f"Unknown attack method {attack_method}")
@@ -568,7 +568,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
             mali_labels = [m_label1, m_label2]  
         elif attack_method == 'none':
             mali_labels = []
-        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedOda']:
+        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedON']:
             mali_labels = list(range(class_num))
         else:
             print("attack_method unknown")

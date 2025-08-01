@@ -29,7 +29,7 @@ from aggr.krum import krum_aggr
 from aggr.normbound import normbound_aggr
 import statistics
 import sys
-from FedOda import FedOda, flatten_model
+from FedON import FedON, flatten_model
 from visualization import plot_curve, per_class_accuracy_plot, plot_multi_curves, plot_twin_curves
 logger = logging.getLogger("individual_logging")
 
@@ -255,7 +255,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=1,  persistent_workers=True, pin_memory=False)
         
         # object for FedOda class
-        foda = FedOda(model_fn=model_fn, 
+        foda = FedON(model_fn=model_fn, 
                     device=device,
                     pooled_loader=pooled_loader,
                     vali_loader=original_vali_loader,

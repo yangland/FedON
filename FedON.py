@@ -23,7 +23,7 @@ from paca_agent import PCACAgent
 from pcac_attack import pcac_attack
 from torch.func import functional_call
 
-class FedOda:
+class FedON:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
                  malicious_client_ids, fl_mali_data_dict, total_malicious,  
                  E=5, scaling_l2=8, reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
@@ -155,7 +155,7 @@ class FedOda:
         self.ema_alpha = 0.3       # Tunable: higher = more weight on recent posterior
                         
         # Logging
-        self.logger = logger or logging.getLogger("FedOda")
+        self.logger = logger or logging.getLogger("FedON")
 
         # Historical memory
         self.history_server_updates = []
@@ -381,7 +381,7 @@ class FedOda:
         """
         E = len(self.history_server_updates)
         if E == 0:
-            self.logger.warning("[FedOda] No history found for Bayesian inference. Returning neutral posterior.")
+            self.logger.warning("[FedON] No history found for Bayesian inference. Returning neutral posterior.")
             return 0.5, None
 
         d0_list = []
@@ -400,7 +400,7 @@ class FedOda:
             
             # Log the L2 squared distances
             self.logger.info(
-                f"[FedOda] Iter t-{i}, "
+                f"[FedON] Iter t-{i}, "
                 f"L2²(Δs, Δb')={d0:.4f}, "
                 f"L2²(Δs, Δs')={d1:.4f}, "
                 f"L2²(Δs, Δm)={d2:.4f}, "
@@ -427,17 +427,17 @@ class FedOda:
             posterior = 1 / (1 + math.exp(-ell_clamped))
             posteriors.append(posterior)
 
-            self.logger.info(f"[FedOda] Iteration {i} log-likelihood = {l:.4f} (clamped: {ell_clamped:.2f}), Posterior P(H1|D) = {posterior:.4f}")
+            self.logger.info(f"[FedON] Iteration {i} log-likelihood = {l:.4f} (clamped: {ell_clamped:.2f}), Posterior P(H1|D) = {posterior:.4f}")
 
         if use_average:
             # Use the average posterior of the iterations
             avg_posterior = sum(posteriors) / len(posteriors)
-            self.logger.info(f"[FedOda] Average Posterior P(H1|D) = {avg_posterior:.4f}")
+            self.logger.info(f"[FedON] Average Posterior P(H1|D) = {avg_posterior:.4f}")
             return avg_posterior, sum(log_likelihoods) / len(log_likelihoods)
         else:
             # Use only the most recent iteration's posterior
             recent_posterior = posteriors[-1]
-            self.logger.info(f"[FedOda] Using Recent Posterior P(H1|D) = {recent_posterior:.4f}")
+            self.logger.info(f"[FedON] Using Recent Posterior P(H1|D) = {recent_posterior:.4f}")
             return recent_posterior, log_likelihoods[-1]
 
 
@@ -445,7 +445,7 @@ class FedOda:
     def bayesian_inference_cosine(self):
         E = len(self.history_server_updates)
         if E == 0:
-            self.logger.warning("[FedOda] No history found for Bayesian inference. Returning neutral posterior.")
+            self.logger.warning("[FedON] No history found for Bayesian inference. Returning neutral posterior.")
             return 0.5
 
         d0_list = []
@@ -464,7 +464,7 @@ class FedOda:
             d0_list.append(d0)
             d1_list.append(d1)
 
-            self.logger.info(f"[FedOda] Iter t-{i}")
+            self.logger.info(f"[FedON] Iter t-{i}")
 
         # ✅ Fix variance computation
         if len(d0_list) > 1:
@@ -474,7 +474,7 @@ class FedOda:
 
         sigma2 = max(sigma2, 1e-4)  # ensure nonzero
 
-        self.logger.info(f"[FedOda] Estimated σ² = {sigma2:.6f}")
+        self.logger.info(f"[FedON] Estimated σ² = {sigma2:.6f}")
 
         for d0, d1 in zip(d0_list, d1_list):
             l = ((d0**2) - (d1**2)) / (2 * sigma2)
@@ -489,8 +489,8 @@ class FedOda:
 
         posterior = 1 / (1 + math.exp(-ell_total_clamped))
 
-        self.logger.info(f"[FedOda] Cosine-based log-likelihood total = {ell_total:.4f} (clamped: {ell_total_clamped:.2f})")
-        self.logger.info(f"[FedOda] Posterior P(H1|D) = {posterior:.4f}")
+        self.logger.info(f"[FedON] Cosine-based log-likelihood total = {ell_total:.4f} (clamped: {ell_total_clamped:.2f})")
+        self.logger.info(f"[FedON] Posterior P(H1|D) = {posterior:.4f}")
 
         return posterior, mean_log_likelihood
 
@@ -530,7 +530,7 @@ class FedOda:
         if (self.prev_server_model is None or
             self.prev_benign_update is None or
             self.prev_malicious_update is None):
-            self.logger.warning("[FedOda] Missing history to compute r3. Returning None.")
+            self.logger.warning("[FedON] Missing history to compute r3. Returning None.")
             return None
 
         delta_s = flatten_model(self.server_model.state_dict()) - flatten_model(self.prev_server_model.state_dict())
@@ -553,7 +553,7 @@ class FedOda:
             scaled_r3 = np.clip(scaled_r3, -scale, scale)
 
         self.logger.info(
-            f"[FedOda] r3: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, "
+            f"[FedON] r3: cos_b_dist = {cos_b_dist:.4f}, cos_m_dist = {cos_m_dist:.4f}, "
             f"scaled_r3 = {scaled_r3:.4f}"
         )
         return float(scaled_r3)
@@ -705,13 +705,13 @@ class FedOda:
 
 
             self.logger.info(
-                f"[FedOda][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
+                f"[FedON][Craft-{mode}] Attempt {attempt + 1}: Acc = {new_acc:.4f}, ΔAcc = {-acc_drop:.4f}, CosDist = {cos_dist:.4f}, ||Δ|| = {delta.norm():.4f}"
                 f"CosDist Δ_m~Δ_t = {cos_dist_target:.4f} | Δ_m~Δ_b = {cos_dist_benign:.4f} | ||Δ|| = {delta.norm():.4f}"
             )
 
             # === Check for successful attack
             if acc_drop >= harm_threshold:
-                self.logger.info(f"[FedOda][Craft-{mode}] Successful attack at attempt {attempt + 1}")
+                self.logger.info(f"[FedON][Craft-{mode}] Successful attack at attempt {attempt + 1}")
                 model.load_state_dict(original_model_state)
                 return delta.detach()
 
@@ -730,11 +730,11 @@ class FedOda:
 
         # === Final fallback
         if all_acc_improving:
-            self.logger.warning(f"[FedOda][Craft-{mode}] All updates improved accuracy. Sending zero update.")
+            self.logger.warning(f"[FedON][Craft-{mode}] All updates improved accuracy. Sending zero update.")
             model.load_state_dict(original_model_state)
             return torch.zeros_like(benign_update)
 
-        self.logger.warning(f"[FedOda][Craft-{mode}] No harmful update found. Returning best effort.")
+        self.logger.warning(f"[FedON][Craft-{mode}] No harmful update found. Returning best effort.")
         model.load_state_dict(original_model_state)
         return best_delta
 
@@ -868,7 +868,7 @@ class FedOda:
     def sign_based_bayesian_inference(self, epsilon=1e-6):
         E = len(self.history_server_updates)
         if E == 0:
-            self.logger.warning("[FedOda] No history available for sign-based inference.")
+            self.logger.warning("[FedON] No history available for sign-based inference.")
             return 0.5
 
         delta_s = self.history_server_updates[-1]
@@ -883,7 +883,7 @@ class FedOda:
         conflict_mask = (sign_b != sign_m) & (sign_b != 0) & (sign_m != 0)
 
         if conflict_mask.sum().item() == 0:
-            self.logger.warning("[FedOda] No conflicting coordinates found between benign and malicious signs.")
+            self.logger.warning("[FedON] No conflicting coordinates found between benign and malicious signs.")
             return 0.5
 
         total_conflict = conflict_mask.sum().item()
@@ -898,7 +898,7 @@ class FedOda:
         posterior = 1 / (1 + math.exp(-log_likelihood_ratio))
 
         self.logger.info(
-            f"[FedOda] Sign-based Bayesian Inference: "
+            f"[FedON] Sign-based Bayesian Inference: "
             f"total_dims={delta_s.numel()}, conflict={total_conflict} "
             f"({total_conflict / delta_s.numel():.2f}%), "
             f"agree_m={agree_m}, agree_b={agree_b}, "
@@ -934,8 +934,8 @@ class FedOda:
 
         # Log full history
         formatted_history = [f"{p:.4f}" if p is not None else "None" for p in self.posterior_history]
-        self.logger.info(f"[FedOda] Posterior history (last {len(self.posterior_history)} rounds): {formatted_history}")
-        self.logger.info(f"[FedOda] EMA posterior = {self.ema_posterior:.4f}")
+        self.logger.info(f"[FedON] Posterior history (last {len(self.posterior_history)} rounds): {formatted_history}")
+        self.logger.info(f"[FedON] EMA posterior = {self.ema_posterior:.4f}")
 
         # Parameters
         margin = 0.1
@@ -951,20 +951,20 @@ class FedOda:
             direction = random.choice(['up', 'down'])
             if direction == 'up':
                 new_factor = scaling_factor * exploration_scale
-                self.logger.info("[FedOda] Exploration: Trying increased scaling factor.")
+                self.logger.info("[FedON] Exploration: Trying increased scaling factor.")
             else:
                 new_factor = scaling_factor * self.reduce_factor
-                self.logger.info("[FedOda] Exploration: Trying reduced scaling factor.")
+                self.logger.info("[FedON] Exploration: Trying reduced scaling factor.")
         else:
             if avg_posterior < lower:
                 new_factor = scaling_factor * self.reduce_factor
-                self.logger.info(f"[FedOda] EMA posterior low < {lower:.4f} — reducing scaling.")
+                self.logger.info(f"[FedON] EMA posterior low < {lower:.4f} — reducing scaling.")
             elif avg_posterior > upper:
                 new_factor = scaling_factor * self.increase_factor
-                self.logger.info(f"[FedOda] EMA posterior high > {upper:.4f} — increasing scaling.")
+                self.logger.info(f"[FedON] EMA posterior high > {upper:.4f} — increasing scaling.")
             else:
                 new_factor = scaling_factor * 1.05
-                self.logger.info(f"[FedOda] EMA posterior near threshold — slightly increasing.")
+                self.logger.info(f"[FedON] EMA posterior near threshold — slightly increasing.")
 
         new_factor = max(0.5, min(20.0, new_factor))
         return new_factor
@@ -1174,7 +1174,7 @@ class FedOda:
         cos_dist_initial = 1 - cos_sim_initial
         
         if cos_dist_initial <= epsilon_cos:
-            self.logger.info(f"[FedOda] Original update already satisfies constraint (cos_dist={cos_dist_initial:.4f} ≤ {epsilon_cos:.4f})")
+            self.logger.info(f"[FedON] Original update already satisfies constraint (cos_dist={cos_dist_initial:.4f} ≤ {epsilon_cos:.4f})")
             return Delta_m
         
         # Binary search for alpha (mixing factor)
@@ -1199,12 +1199,12 @@ class FedOda:
             else:
                 high = alpha  # Move toward Delta_b
         
-        self.logger.info(f"[FedOda] Best alpha found: {best_alpha:.4f} for epsilon_cos={epsilon_cos:.4f}")
+        self.logger.info(f"[FedON] Best alpha found: {best_alpha:.4f} for epsilon_cos={epsilon_cos:.4f}")
         cos_dist = 1 - F.cosine_similarity(
             (best_alpha * Delta_m_unit + (1 - best_alpha) * Delta_b_unit).unsqueeze(0),
             Delta_b_unit.unsqueeze(0)
         ).item()
-        self.logger.info(f"[FedOda] Cosine distance to benign update: {cos_dist:.4f}")
+        self.logger.info(f"[FedON] Cosine distance to benign update: {cos_dist:.4f}")
         
         # Compute final Delta_m_prime (restore original norm)
         Delta_m_prime_flat = best_alpha * Delta_m_unit + (1 - best_alpha) * Delta_b_unit
@@ -1275,7 +1275,7 @@ class FedOda:
             loader = self.pooled_loader
 
         if loader is None:
-            self.logger.warning("[FedOda] No validation loader provided - skipping validation")
+            self.logger.warning("[FedON] No validation loader provided - skipping validation")
             return None
 
         if model is None:
@@ -1420,7 +1420,7 @@ class FedOda:
             val_accuracy: Validation accuracy of the malicious model (0-100)
         """
         if self.vali_loader is None:
-            self.logger.warning("[FedOda] No validation loader provided - skipping evaluation")
+            self.logger.warning("[FedON] No validation loader provided - skipping evaluation")
             return None
         
         # Create a copy of the server model
@@ -1440,7 +1440,7 @@ class FedOda:
 
     def attack(self, sample_num=3, batch_size=64, mco_dict=None, c_epochs=1):
         if self.server_model is None:
-            self.logger.warning("[FedOda] Server model is None. Cannot proceed with attack.")
+            self.logger.warning("[FedON] Server model is None. Cannot proceed with attack.")
             return {}, {}
 
         # === Update server model
@@ -1456,7 +1456,7 @@ class FedOda:
 
         # === If no malicious clients → skip PPO and attack
         if self.current_s_m == 0:
-            self.logger.info(f"[FedOda] No malicious clients selected in round {round_number}. Skipping attack.")
+            self.logger.info(f"[FedON] No malicious clients selected in round {round_number}. Skipping attack.")
             self.skipped_last_round = True
             return {}, {}
 
@@ -1482,12 +1482,12 @@ class FedOda:
         else:
             s_b = self.total_clients_num - self.malicious_clients_num
             s_hat = self.total_clients_num
-            self.logger.warning("[FedOda] prev_s_m is None. Using fallback s_b and s_hat.")
+            self.logger.warning("[FedON] prev_s_m is None. Using fallback s_b and s_hat.")
 
         s_m = self.prev_s_m if self.prev_s_m else self.malicious_clients_num
         alpha = s_m / s_hat  # malicious client portion
 
-        self.logger.info(f"[FedOda] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}, s_m = {s_m}, alpha = {alpha:.4f}")
+        self.logger.info(f"[FedON] Estimated s_b = {s_b:.2f}, s_hat = {s_hat:.2f}, s_m = {s_m}, alpha = {alpha:.4f}")
 
         return s_b, s_hat, s_m, alpha
 
@@ -1599,36 +1599,36 @@ class FedOda:
         ).item()
 
         logger.info(
-            f"[FedOda] Norms     |  norm(Δ_m): {mali_norm:.4f} | norm(Δ_b): {benign_norm:.4f}"
+            f"[FedON] Norms     |  norm(Δ_m): {mali_norm:.4f} | norm(Δ_b): {benign_norm:.4f}"
         )
         logger.info(
-            f"[FedOda] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_dist:.4f}"
+            f"[FedON] L2 Dist   | L2(Δ_m, Δ_b): {l2_dist:.4f} | L2(Δ_b_i, Δ_b_j): {avg_l2_dist:.4f}"
         )
         logger.info(
-            f"[FedOda] Cos Dist Δ|  Δ_m~Δ_b: {cos_dist:.4f} | Δ_m~Δ_g: {cos_dist_mg:.4f} | Δ_b~Δ_b: {avg_cos_distance:.4f}"
+            f"[FedON] Cos Dist Δ|  Δ_m~Δ_b: {cos_dist:.4f} | Δ_m~Δ_g: {cos_dist_mg:.4f} | Δ_b~Δ_b: {avg_cos_distance:.4f}"
         )
         logger.info(
-            f"[FedOda] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
+            f"[FedON] Cos Dist M| model_m~model_b: {cos_model_dist:.8f} | model_b~model_b: {avg_full_model_cos:.8f}"
         )
 
 
 
     def _regular_attack(self, sample_num, batch_size, mco_dict, c_epochs, round_number):
         # Step1. perform analysis
-        self.logger.info("[FedOda] Step 1: Computing best attack direction (g_m)")
+        self.logger.info("[FedON] Step 1: Computing best attack direction (g_m)")
         g_m_dict, g_m = self.get_attack_direction(model=self.server_model,
                                                   train_loader=self.pooled_loader,
                                                   initial_lr=0.001,
                                                   num_epochs=2)
 
-        self.logger.info("[FedOda] Step 2: Predicting benign update direction with pooled data")
+        self.logger.info("[FedON] Step 2: Predicting benign update direction with pooled data")
         benign_direction, simulated_norm = self.simulate_benign_direction(
             loader=self.pooled_loader,
             data_size=self.client_data_size,
             batch_size=self.client_batch_size
         )
 
-        self.logger.info("[FedOda] Step 3: Simulating benign updates for sampled clients")
+        self.logger.info("[FedON] Step 3: Simulating benign updates for sampled clients")
         avg_l2_distance, avg_cos_distance, avg_l2_norm, avg_full_model_cos = \
             self.simulate_benign_updates_l2_cos(sample_num, batch_size, mco_dict, c_epochs)
             
@@ -1639,7 +1639,7 @@ class FedOda:
                         ).item()
 
 
-        self.logger.info(f"[FedOda] Cosine distance between g_m and g_b: {cos_dist_g_m_g_b:.4f}")
+        self.logger.info(f"[FedON] Cosine distance between g_m and g_b: {cos_dist_g_m_g_b:.4f}")
 
         # Get the estimated benign model update(\Delta_b'), and the best attack direction (g_m)   
         benign_update = avg_l2_norm * benign_direction
@@ -1706,7 +1706,7 @@ class FedOda:
             )
 
             self.logger.info(
-                f"[FedOda] PCAC noise_std: {noise_std:.4f}, "
+                f"[FedON] PCAC noise_std: {noise_std:.4f}, "
                 f"action: {[f'{float(x):.4f}' for x in action]}, "
                 f"state: {[f'{float(x):.4f}' for x in state]}"
             )
@@ -1746,9 +1746,9 @@ class FedOda:
                 action_diff = torch.norm(action_tensor - prev_action_tensor).item()
 
                 self.logger.info(
-                    f"[FedOda] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
+                    f"[FedON] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
                     f"[PCAC] ΔAction norm: {action_diff:.4f}, "
-                    f"[FedOda] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
+                    f"[FedON] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
                 )
 
                 self.pcac_agent.store_transition(
@@ -1765,7 +1765,7 @@ class FedOda:
 
             else:
                 # First iteration OR previous attack skipped — no reward or training
-                self.logger.info("[FedOda][PCAC] Skipping reward and training — no valid feedback from last round.")
+                self.logger.info("[FedON][PCAC] Skipping reward and training — no valid feedback from last round.")
                 r1 = 0.0
                 r2 = 0.0
                 r3 = 0.0
@@ -1786,7 +1786,7 @@ class FedOda:
                 prev_acc=acc_prev,
                 curr_acc=acc_curr
             )
-            self.logger.info(f"[FedOda] MOQ action: {[float(x) for x in action]}, state: {state}")
+            self.logger.info(f"[FedON] MOQ action: {[float(x) for x in action]}, state: {state}")
 
             # === Step 5: Compute reward from previous round
             if self.prev_acc is not None:
@@ -1795,7 +1795,7 @@ class FedOda:
                 r3 = 0
                 reward_vector = [r1, r2]
                 
-                self.logger.info(f"[FedOda] Reward r1: {r1:.4f}, r2: {r2:.4f} (prev_acc={self.prev_acc:.4f}, acc_curr={acc_curr:.4f})")
+                self.logger.info(f"[FedON] Reward r1: {r1:.4f}, r2: {r2:.4f} (prev_acc={self.prev_acc:.4f}, acc_curr={acc_curr:.4f})")
                 old_eps, new_eps = self.moq_agent.adjust_epsilon(
                     r1=r1,
                     r2=r2,
@@ -1803,10 +1803,10 @@ class FedOda:
                     r2_threshold=0.15,
                     epsilon_cap=0.5
                 )
-                self.logger.info(f"[FedOda] Adjusted epsilon: {old_eps:.4f} → {new_eps:.4f}")
+                self.logger.info(f"[FedON] Adjusted epsilon: {old_eps:.4f} → {new_eps:.4f}")
                 
                 scalar_reward = np.dot(reward_vector, self.moq_preference_vector.numpy())
-                self.logger.info(f"[FedOda] Scalar reward: {scalar_reward:.4f}")
+                self.logger.info(f"[FedON] Scalar reward: {scalar_reward:.4f}")
                 
                 self.moq_agent.update(
                     s=self.prev_state,
@@ -1844,7 +1844,7 @@ class FedOda:
                     best_action_idx = torch.argmax(scalar_q_values).item()
                     best_action = self.moq_agent.action_space[best_action_idx]
 
-                    self.logger.info(f"[FedOda][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}")
+                    self.logger.info(f"[FedON][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}")
 
         elif self.rl_mode == "PPO":
             # === Step 0: Measure current state
@@ -1889,7 +1889,7 @@ class FedOda:
                 reward_scalar = self.ppo_agent.combine_reward(round_number - 1, reward_vector)
 
                 self.logger.info(
-                    f"[FedOda] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}"
+                    f"[FedON] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}"
                 )
 
                 self.ppo_agent.buffer.append((
@@ -1899,12 +1899,12 @@ class FedOda:
                     self.ppo_prev_log_prob.detach()
                 ))
             else:
-                self.logger.warning("[FedOda] PPO previous state/action/log_prob not set. Skipping logging.")
+                self.logger.warning("[FedON] PPO previous state/action/log_prob not set. Skipping logging.")
                 reward_scalar = 0 
 
             # === Step 4: Train PPO every few rounds
             if round_number >= 5 and round_number % 2 == 0:
-                self.logger.info(f"[FedOda][PPO] Training PPO agent at round {round_number}")
+                self.logger.info(f"[FedON][PPO] Training PPO agent at round {round_number}")
                 self.ppo_agent.train(memory=self.ppo_agent.buffer, round_number=round_number)
                 self.ppo_agent.buffer.clear()
         elif self.rl_mode == "ES":
@@ -1921,7 +1921,7 @@ class FedOda:
                     alpha=0.05,
                     bounds=[(-1.0, 1.0), (-1.0, 1.0)]  # per-dimension bounds
                 )
-                self.logger.info("[FedOda][ES] Initialized Evolution Strategy Agent.")
+                self.logger.info("[FedON][ES] Initialized Evolution Strategy Agent.")
 
             # === Step 1: Sample ONE action
             action = self.es_agent.sample_action()
