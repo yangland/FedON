@@ -74,7 +74,7 @@ class PCACAgent:
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr)
 
         self.memory = []  # Simple replay buffer
-        self.batch_size = 32
+        self.batch_size = 8 # 32
 
         # Noise exploration parameters
         self.reward_ema = 0.0
@@ -124,53 +124,106 @@ class PCACAgent:
             )
 
 
-    def update_noise_std(self, reward_scalar, reward_threshold=0.01):
+    # def update_noise_std(self, reward_scalar, reward_threshold=0.01):
+    #     if self.exploration_mode != 'noise':
+    #         return
+
+    #     # Clip reward to [0, 1] for stability
+    #     reward_scalar = float(np.clip(reward_scalar, 0.0, 1.0))
+
+    #     # Update EMA of reward
+    #     self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
+
+    #     # Compute delta
+    #     delta = reward_scalar - self.reward_ema
+
+    #     # Only update if change is significant
+    #     if delta > reward_threshold:
+    #         # Reward increasing → reduce noise (exploit)
+    #         self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
+
+    #     elif delta < -reward_threshold:
+    #         # Reward decreasing → adaptively increase noise (explore)
+    #         # Scale growth factor based on the magnitude of delta
+    #         delta_magnitude = abs(delta)
+    #         # Clamp the multiplier between 1.0 and some multiple of noise_growth
+    #         dynamic_growth = min(self.noise_growth ** (1 + delta_magnitude * 5), 2.0)
+    #         self.noise_std = min(self.noise_std_max, self.noise_std * dynamic_growth)
+
+    #     # else: delta within threshold → no change
+
+    #     if self.logger:
+    #         self.logger.info(
+    #             f"[PCAC][Noise] reward: {reward_scalar:.4f}, EMA: {self.reward_ema:.4f}, "
+    #             f"delta: {delta:.4f}, dynamic_growth: {dynamic_growth if delta < -reward_threshold else 'N/A'}, "
+    #             f"noise_std: {self.noise_std:.4f}"
+    #         )
+    
+    def update_noise_std(
+        self,
+        reward_scalar: float,
+        reward_threshold: float = 0.01,
+        reward_valid: bool = True,
+        max_plateau_rounds: int = 10,
+    ):
+        """Adaptively update exploration noise based on reward signal."""
         if self.exploration_mode != 'noise':
             return
 
-        # Clip reward to [0, 1] for stability
+        # Normalize reward to [0, 1] softly for smoother dynamics
         reward_scalar = float(np.clip(reward_scalar, 0.0, 1.0))
+
+        if not reward_valid:
+            # Skip update if reward is not valid (e.g., no attack was applied)
+            return
 
         # Update EMA of reward
         self.reward_ema = (1 - self.alpha) * self.reward_ema + self.alpha * reward_scalar
 
-        # Compute delta
+        # Compute delta between current reward and EMA
         delta = reward_scalar - self.reward_ema
 
-        # Only update if change is significant
+        # Track flat reward plateaus
+        if abs(delta) < reward_threshold:
+            self.no_improvement_counter += 1
+        else:
+            self.no_improvement_counter = 0
+
+        # --- Adaptive Noise Update ---
         if delta > reward_threshold:
             # Reward increasing → reduce noise (exploit)
             self.noise_std = max(self.noise_std_min, self.noise_std * self.noise_decay)
 
         elif delta < -reward_threshold:
-            # Reward decreasing → adaptively increase noise (explore)
-            # Scale growth factor based on the magnitude of delta
+            # Reward decreasing → increase noise (explore)
             delta_magnitude = abs(delta)
-            # Clamp the multiplier between 1.0 and some multiple of noise_growth
             dynamic_growth = min(self.noise_growth ** (1 + delta_magnitude * 5), 2.0)
             self.noise_std = min(self.noise_std_max, self.noise_std * dynamic_growth)
 
-        # else: delta within threshold → no change
+        # --- Plateau Handling ---
+        if self.no_improvement_counter >= max_plateau_rounds:
+            self.noise_std = min(self.noise_std_max, self.noise_std * self.noise_growth)
+            if self.logger:
+                self.logger.info(
+                    f"[PCAC][Noise] Plateau detected for {max_plateau_rounds} rounds → forcing noise increase"
+                )
+            self.no_improvement_counter = 0
 
+        # Clamp to range
+        self.noise_std = np.clip(self.noise_std, self.noise_std_min, self.noise_std_max)
+
+        # --- Logging ---
         if self.logger:
             self.logger.info(
                 f"[PCAC][Noise] reward: {reward_scalar:.4f}, EMA: {self.reward_ema:.4f}, "
-                f"delta: {delta:.4f}, dynamic_growth: {dynamic_growth if delta < -reward_threshold else 'N/A'}, "
-                f"noise_std: {self.noise_std:.4f}"
+                f"delta: {delta:.4f}, noise_std: {self.noise_std:.4f}, "
+                f"no_improvement_counter: {self.no_improvement_counter}"
             )
-
 
 
     def select_action(self, state_tensor, preference_vector):
         state_tensor = state_tensor.unsqueeze(0).to(self.device)
         preference_vector = preference_vector.unsqueeze(0).to(self.device)
-        
-        def wrap_action(x, low=-1.0, high=1.0):
-            """
-            Wrap a tensor x into the range [low, high] using modular arithmetic.
-            """
-            range_size = high - low
-            return ((x - low) % range_size) + low
         
         with torch.no_grad():
             actor_output = self.actor(state_tensor, preference_vector).squeeze(0)

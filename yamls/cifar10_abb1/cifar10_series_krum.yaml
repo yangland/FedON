@@ -3,7 +3,7 @@ if_series: True
 
 # defense methods
 defense: "AGGR" # "AGGR",
-# "krum", "geometric_median", "coordinate_wise_median", "fedavg", "fltrust"
+# "krum", "rfa"_wise_median", "fedavg", "fltrust"
 aggr: "multi-krum"
 aggr_c_lr: 1.0
 aggr_g_lr: 1.0

@@ -25,8 +25,8 @@ from torch.func import functional_call
 
 class FedOda:
     def __init__(self, model_fn, device, pooled_loader, vali_loader, total_clients_num, 
-                 malicious_client_ids, fl_mali_data_dict, E=5, scaling_l2=8,
-                 reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
+                 malicious_client_ids, fl_mali_data_dict, total_malicious,  
+                 E=5, scaling_l2=8, reduce_factor=0.8, increase_factor=1.1, threshold=0.7, 
                  client_learning_rate=0.01, client_data_size=500, client_batch_size=64,
                  rl_mode="PCAC", ablation_mode=None, logger=None,
                  attack_config=None):  
@@ -50,6 +50,7 @@ class FedOda:
         self.total_clients_num = total_clients_num
         self.malicious_client_ids = malicious_client_ids
         self.malicious_clients_num = len(malicious_client_ids)
+        self.total_malicious = total_malicious
         self.fl_mali_data_dict = fl_mali_data_dict
         self.current_s_m = None
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
@@ -65,6 +66,7 @@ class FedOda:
         self.prev_server_model = None
         self.prev_global_update = None
         self.prev_malicious_update = None
+        self.skipped_last_round = False
         
         # Create the Bayesian Optimizer
         if self.rl_mode == "BO":
@@ -103,7 +105,7 @@ class FedOda:
             self.attack_config = attack_config or {} 
             
             self.pcac_agent = PCACAgent(
-                state_dim=6,
+                state_dim=7,
                 action_dim=2,
                 reward_dim=2,
                 device=device,
@@ -1455,6 +1457,7 @@ class FedOda:
         # === If no malicious clients → skip PPO and attack
         if self.current_s_m == 0:
             self.logger.info(f"[FedOda] No malicious clients selected in round {round_number}. Skipping attack.")
+            self.skipped_last_round = True
             return {}, {}
 
         # === Proceed with regular attack
@@ -1708,36 +1711,45 @@ class FedOda:
                 f"state: {[f'{float(x):.4f}' for x in state]}"
             )
 
-            if self.prev_acc is not None:
+            if self.prev_acc is not None and not self.skipped_last_round:
                 # --- Compute reward components ---
-                r1 = 1.0 - acc_curr                              # Encourage lower accuracy (attack success)
-                r2 = (self.prev_acc - acc_curr) / 0.2            # Relative drop in accuracy, normalized
-                r2 = np.clip(r2, -1.0, 1.0)                      # Prevent extreme values
-                r3=0
+                # r1 = 1.0 - acc_curr
+                # r2 = (self.prev_acc - acc_curr) / 0.2
+                # r2 = np.clip(r2, -1.0, 1.0)
+                # reward_vector = [r1, r2]
+                # preference_vector = self.pcac_preference_vector.cpu().numpy()
                 
+                # --- Compute reward components ---
+                r1 = 1.0 - acc_curr  # Final goal
+                delta_acc = acc_curr - self.prev_acc  # Positive = model improved (bad), Negative = model got worse (good)
+
+                alpha = 0.8  # controls curvature of r2 reward shaping
+                r2 = -np.sign(delta_acc) * (abs(delta_acc) ** alpha)
+                r2 = np.clip(r2, -1.0, 1.0)
+                r3 = 0
                 reward_vector = [r1, r2]
                 preference_vector = self.pcac_preference_vector.cpu().numpy()
-
-                # --- Compute scalar reward ---
+                
                 reward_scalar = np.dot(reward_vector, preference_vector)
+                reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)
 
-                # --- Normalize reward for stability (optional scale-up) ---
-                reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)  # Scale and clamp to [0, 1]
-
-                # --- Update noise_std based on reward ---
-                self.pcac_agent.update_noise_std(reward_scalar, reward_threshold=0.01)
+                reward_valid = self.prev_acc is not None and not self.skipped_last_round
+                self.pcac_agent.update_noise_std(
+                    reward_scalar,
+                    reward_threshold=0.01,
+                    reward_valid=reward_valid
+                )
                 self.pcac_agent.update_epsilon()
+
                 action_tensor = torch.tensor(action, dtype=torch.float32).to(self.device)
                 prev_action_tensor = torch.tensor(self.prev_action, dtype=torch.float32).to(self.device)
                 action_diff = torch.norm(action_tensor - prev_action_tensor).item()
 
-                # --- Log for debugging ---
                 self.logger.info(
                     f"[FedOda] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
-                    f"[PCAC] ΔAction norm: {action_diff:.4f},"
+                    f"[PCAC] ΔAction norm: {action_diff:.4f}, "
                     f"[FedOda] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
                 )
-
 
                 self.pcac_agent.store_transition(
                     s=self.prev_state,
@@ -1746,17 +1758,19 @@ class FedOda:
                     s_next=state,
                     preference_vector=self.pcac_preference_vector
                 )
-                
-                # train the PCAC agent
+
+                # PCAC agent training
                 for _ in range(self.pcac_update_steps):
                     self.pcac_agent.update()
 
             else:
-                # First iteration: can't compute rewards that depend on prev_acc
+                # First iteration OR previous attack skipped — no reward or training
+                self.logger.info("[FedOda][PCAC] Skipping reward and training — no valid feedback from last round.")
                 r1 = 0.0
                 r2 = 0.0
                 r3 = 0.0
                 reward_scalar = 0.0
+                
             self.prev_state = state
             self.prev_action = action
             self.prev_acc = acc_curr

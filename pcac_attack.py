@@ -21,13 +21,13 @@ def pcac_attack(fedoda, mali_direction, benign_update, avg_cos_distance, avg_l2_
         # prev_model_norm = get_model_l2_norm(fedoda.prev_server_model)
         # curr_model_norm = get_model_l2_norm(fedoda.server_model)
         # model_norm_delta = float(np.tanh((curr_model_norm - prev_model_norm) / prev_model_norm))
-        
+        # cos_dist_rate = cos_dist_mali_benign / (avg_cos_distance + 1e-8)
         cos_dist_mb = cos_dist_mali_benign 
-        cos_dist_rate = cos_dist_mali_benign / (avg_cos_distance + 1e-8)
     else:
         cos_dist_mb = 2.0
         
-    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance]
+    malicious_select_ratio = fedoda.current_s_m / fedoda.total_malicious if fedoda.total_malicious > 0 else 0.0
+    state = [curr_acc, acc_delta,  cos_dist_mb, avg_cos_distance, malicious_select_ratio]
     prev_action_np = fedoda.pcac_agent.prev_action.detach().cpu().numpy()
     state += prev_action_np.tolist()
 

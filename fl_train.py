@@ -262,6 +262,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     total_clients_num=client_num,
                     malicious_client_ids=malicious_client_ids,
                     fl_mali_data_dict = fl_mali_data_dict,
+                    total_malicious=malicious_num,
                     E=params['fedoda']['E'],
                     scaling_l2=params['fedoda']['scaling_factor'],
                     reduce_factor=params['fedoda']['reduce_factor'],
@@ -363,7 +364,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         if defense == 'AGGR':
             if aggr == 'fedavg':
                 c_grad = fedavg(c_grad_dict)
-            elif aggr == 'geometric_median':
+            elif aggr == "rfa":
                 c_grad, geo_weights = geo_med_aggr(c_grad_dict, device)
                 c_weights_csv.append_save_csv(
                     [iter] + [v for k, v in sorted(geo_weights.items())]  # Remove .item() since v is already a float
