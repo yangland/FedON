@@ -380,6 +380,59 @@ class ResNet8_Light_one_channel(nn.Module):
         out = out.view(out.size(0), -1)
         out = self.linear(out)
         return out
+    
+
+class ResNet34_Light(nn.Module):
+    def __init__(self, num_classes=10, norm_layer=None, dataset='imagenette'):
+        super(ResNet34_Light, self).__init__()
+        if norm_layer is None:
+            self.norm_layer = lambda c: nn.GroupNorm(num_groups=4, num_channels=c)
+        else:
+            self.norm_layer = norm_layer
+
+        channel = channel_dict.get(dataset, 3)
+        self.in_planes = 32  # LIGHTER than standard ResNet34
+
+        self.conv1 = nn.Conv2d(channel, 32, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = self.norm_layer(32)
+
+        # ResNet34 block config: [3, 4, 6, 3] with reduced channels
+        self.layer1 = self._make_layer(32, 3, stride=1)
+        self.layer2 = self._make_layer(64, 4, stride=2)
+        self.layer3 = self._make_layer(96, 6, stride=2)
+        self.layer4 = self._make_layer(128, 3, stride=2)
+
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.linear = nn.Linear(128 * BasicBlock.expansion, num_classes)
+
+    def _make_layer(self, planes, num_blocks, stride):
+        strides = [stride] + [1] * (num_blocks - 1)
+        layers = []
+        for s in strides:
+            layers.append(BasicBlock(self.in_planes, planes, s, self.norm_layer))
+            self.in_planes = planes * BasicBlock.expansion
+        return nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        out = self.linear(out)
+        return out
+
+    def get_feature(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.layer1(out)
+        out = self.layer2(out)
+        out = self.layer3(out)
+        out = self.layer4(out)
+        out = self.avgpool(out)
+        out = out.view(out.size(0), -1)
+        return out
 
 
 class ResNet50_Light(nn.Module):

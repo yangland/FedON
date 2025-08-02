@@ -1,7 +1,8 @@
 from models.mnist_6l import Mnist_6L
 from models.convnet import ConvNet
 from models.cifar10_18l import Cifar10_18L 
-from models.resnet import ResNet18, ResNet14_Light, ResNet8_Light, ResNet20, ResNet18_Light, ResNet8_Light_one_channel, ResNet50_Light, bn_to_gn
+from models.resnet import ResNet18, ResNet14_Light, ResNet8_Light, ResNet20, ResNet18_Light, \
+ResNet8_Light_one_channel, ResNet50_Light, ResNet34_Light, bn_to_gn
 from models.vgg import VGG13, VGG16, VGG11, VGG13_32
 from torchvision.models import efficientnet_b0
 import torchvision.models as models
@@ -35,6 +36,7 @@ def get_model(model_name):
         "ResNet8_Light_one_channel":ResNet8_Light_one_channel,
         "ResNet20": ResNet20,
         "ResNet18_Light": ResNet18_Light, # for cifar10
+        "ResNet34_Light": ResNet34_Light, # for imagenette
         "ResNet50_Light": ResNet50_Light # for cifar10
     }
 

@@ -106,8 +106,8 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         # ds_test = datasets.Imagenette(root='./data/imagenette2-320/test', split='val', size="320px", download=False, transform=transform)
         # ds_train = CachedDataset(ds_train)
         # ds_test = CachedDataset(ds_test)
-        ds_train = load_or_cache_imagenette(split='train', transform=transform, cache_dir='./data/cache')
-        ds_test = load_or_cache_imagenette(split='val', transform=transform, cache_dir='./data/cache')
+        ds_train = load_or_cache_imagenette(split='train', transform=imagenette_transform(train=True, resize=image_size[1]), cache_dir='./data/cache')
+        ds_test = load_or_cache_imagenette(split='val', transform=imagenette_transform(train=False, resize=image_size[1]), cache_dir='./data/cache')
     elif dataset == 'emnist-digits':
         ds_train = datasets.EMNIST('./data', split = 'digits', train=True, download=True, transform=transform)
         ds_test = datasets.EMNIST('./data', split = 'digits', train=False, download=True, transform=transform)
@@ -145,16 +145,6 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         # this step is very slow
         ds_train = to_torch_ds(ds_train, transform)
         ds_test = to_torch_ds(ds_train, transform)
-    # elif dataset == 'imagenette':
-    #     ds = huggingface_load_dataset("johnowhitaker/imagenette2-320")['train']
-    #     ds_torch = to_torch_ds(ds, transform)
-    #     random.shuffle(ds_torch)
-    #     n_total = len(ds_torch)
-    #     n_test = int(0.10* n_total)
-    #     ds_test = torch.utils.data.Subset(ds_torch, range(n_test))
-    #     ds_train = torch.utils.data.Subset(ds_torch, range(n_test, n_total)) 
-        # print(ds_train[0][0])
-        # print(ds_train[0][1])
     elif dataset == 'ch':
         #  biologists by focusing on histology tiles from patients with colorectal cancer
         ds = huggingface_load_dataset("dpdl-benchmark/colorectal_histology")['train'] 
@@ -211,6 +201,27 @@ def data_process(dataset, image_size, grayscale=False, percentage=1.0):
         ds_train = subset_ds_train
         
     return ds_train, ds_test
+
+
+def imagenette_transform(train=True, resize=224):
+    if train:
+        return T.Compose([
+            T.RandomResizedCrop(resize, scale=(0.7, 1.0), ratio=(0.75, 1.33)),
+            T.RandomHorizontalFlip(),
+            T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.05),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406],  # Imagenet stats
+                        std=[0.229, 0.224, 0.225]),
+        ])
+    else:
+        return T.Compose([
+            T.Resize(int(resize * 1.14)),  # e.g., 256
+            T.CenterCrop(resize),          # e.g., 224
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]),
+        ])
+
 
 def download_progress_hook(count, blockSize, totalSize):
     """A hook to report the progress of a download. This is mostly intended for users with
