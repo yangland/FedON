@@ -5,7 +5,7 @@ if_series: True
 defense: "AGGR" # "AGGR",
 # "krum", "rfa"_wise_median", "fedavg", "fltrust"
 aggr: "fedavg"
-aggr_c_lr: 1.0
+aggr_c_lr: 1.01
 aggr_g_lr: 1.0
 fltrust_root_iid: True
 
