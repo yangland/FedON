@@ -12,13 +12,7 @@ from typing import List, Optional
 import math
 from utilities import create_balanced_loader, unflatten_delta_to_model
 import numpy as np
-from PPO import PPOAgent
 from utils_attack import *
-from attack_bo import bo_attack
-from attack_bi import bi_attack
-from guided_att_from_action import guided_attack_from_action
-from moq_agent import MOQAgent
-from moq_attack import moq_attack
 from paca_agent import PCACAgent
 from pcac_attack import pcac_attack
 from torch.func import functional_call
@@ -57,85 +51,41 @@ class FedON:
         self.inference_mode = 'validation'   # 'cos' or 'l2', 'sign', 'validation', 'fixed'
         self.pooled_val = [] 
         self.val_acc_pooled_history = []
-        self.rl_mode = rl_mode # 'BO', "BI", "PPO", "ES" "MOQ", "PCAC"
-        if self.rl_mode == "PPO":
-            self.ppo_agent = PPOAgent(state_dim=5, 
-                                      action_dim=2, 
-                                      device=device, 
-                                      reward_weights=[0.0, 1.0, 0])  # 5 state features, 2 action dims
-            self.ppo_episode_memory = []
+        self.rl_mode = rl_mode
+        if self.rl_mode != "PCAC":
+            raise ValueError("The public FedON release supports rl_mode='PCAC' only.")
+
         self.prev_server_model = None
         self.prev_global_update = None
         self.prev_malicious_update = None
         self.skipped_last_round = False
-        
-        # Create the Bayesian Optimizer
-        if self.rl_mode == "BO":
-            l2_bound = (-1.0, 1.0)
-            cos_bound = (-1.0, 1.0)
-            self.bayes_optimizer = BayesOptimizer(
-                bounds=[l2_bound, cos_bound],
-                base_estimator="GP",
-                acq_func="LCB",
-                acq_func_kwargs={"kappa": 5.0},
-                random_state=42
-            )
 
-        if self.rl_mode == "MOQ":
-            self.moq_preference_vector = torch.tensor([0.6, 0.4], dtype=torch.float32)  # Adjust as needed
-            initial_epsilon = 0.5
-            self.moq_agent = MOQAgent(
-                state_dim=3,          # curr_acc, acc_delta, round_norm, model_norm, avg_cos_distance
-                action_dim=2,         # norm_scaling_l2, norm_scaling_cos
-                reward_dim=2,
-                epsilon=initial_epsilon,  # Exploration factor
-                epsilon_min=0.1,
-                epsilon_decay=0.9,
-                epsilon_grow=1.05,
-                device=self.device,
-                action_grid_size=9,  # 9x9 grid for actions
-                logger=logger
-            )
-            self.prev_state = None
-            self.prev_action = None
-            self.prev_acc = None
-        
-        if self.rl_mode == "PCAC":
-            self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
-
-            self.attack_config = attack_config or {} 
-            
-            self.pcac_agent = PCACAgent(
-                state_dim=7,
-                action_dim=2,
-                reward_dim=2,
-                device=device,
-                lr=self.attack_config.get('lr', 1e-3),
-                gamma=self.attack_config.get('gamma', 0.99),
-
-                # Exploration mode
-                exploration_mode=self.attack_config.get('exploration_mode', 'noise'),
-                epsilon=self.attack_config.get('epsilon', 1.0),
-                epsilon_min=self.attack_config.get('epsilon_min', 0.05),
-                epsilon_decay=self.attack_config.get('epsilon_decay', 0.995),
-
-                # Noise adaptation
-                noise_std_init=self.attack_config.get('noise_init', 0.2),
-                noise_std_min=self.attack_config.get('noise_min', 0.05),
-                noise_std_max=self.attack_config.get('noise_max', 0.4),
-                noise_decay=self.attack_config.get('noise_decay', 0.9),
-                noise_growth=self.attack_config.get('noise_growth', 1.1),
-                alpha=self.attack_config.get('noise_alpha', 0.1),
-
-                logger=logger
-                )
-            
-            self.pcac_update_steps = self.attack_config.get('PCAC_update_steps_per_round', 2)
-    
-            self.prev_state = None
-            self.prev_action = None
-            self.prev_acc = None
-            self.ablation_mode = ablation_mode
+        self.pcac_preference_vector = torch.tensor([0.3, 0.7], dtype=torch.float32)
+        self.attack_config = attack_config or {}
+        self.pcac_agent = PCACAgent(
+            state_dim=7,
+            action_dim=2,
+            reward_dim=2,
+            device=device,
+            lr=self.attack_config.get('lr', 1e-3),
+            gamma=self.attack_config.get('gamma', 0.99),
+            exploration_mode=self.attack_config.get('exploration_mode', 'noise'),
+            epsilon=self.attack_config.get('epsilon', 1.0),
+            epsilon_min=self.attack_config.get('epsilon_min', 0.05),
+            epsilon_decay=self.attack_config.get('epsilon_decay', 0.995),
+            noise_std_init=self.attack_config.get('noise_init', 0.2),
+            noise_std_min=self.attack_config.get('noise_min', 0.05),
+            noise_std_max=self.attack_config.get('noise_max', 0.4),
+            noise_decay=self.attack_config.get('noise_decay', 0.9),
+            noise_growth=self.attack_config.get('noise_growth', 1.1),
+            alpha=self.attack_config.get('noise_alpha', 0.1),
+            logger=logger
+        )
+        self.pcac_update_steps = self.attack_config.get('PCAC_update_steps_per_round', 2)
+        self.prev_state = None
+        self.prev_action = None
+        self.prev_acc = None
+        self.ablation_mode = ablation_mode
             
     
         # For tracking performance history and reward scores
@@ -559,7 +509,7 @@ class FedON:
         )
         return float(scaled_r3)
 
-    def compare_proj_vs_pgd_attack(self, benign_update, target_direction, scaling_cos, epsilon, pgd_steps=20, pgd_lr=0.1, alpha=0.1, lambda_cos=0.1):
+    def compare_proj_vs_pgd_attack(self, benign_update, target_direction, scaling_cos, epsilon, pgd_steps=20, pgd_lr=0.01, alpha=0.1, lambda_cos=0.1):
         """
         Compare accuracy after applying PROJ vs PGD malicious updates.
         """
@@ -637,7 +587,7 @@ class FedON:
         cos_growth=0.9,
         mode="PROJ",
         pgd_steps=20,
-        pgd_lr=0.1,
+        pgd_lr=0.01,
         alpha=0.1,
         lambda_cos=0.1
     ):
@@ -747,7 +697,7 @@ class FedON:
         scaling_cos_dist,
         epsilon,
         steps=20,
-        lr=0.1,
+        lr=0.01,
         device=None,
         warm_start_delta=None,  # Optional: start from another delta, e.g. PROJ
         log_interval=5
@@ -1455,7 +1405,7 @@ class FedON:
         round_number = len(self.val_acc_pooled_history)
         acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
 
-        # === If no malicious clients → skip PPO and attack
+        # === If no malicious clients → skip PCAC update and attack
         if self.current_s_m == 0:
             self.logger.info(f"[FedON] No malicious clients selected in round {round_number}. Skipping attack.")
             self.skipped_last_round = True
@@ -1658,295 +1608,77 @@ class FedON:
         # print(round_number, self.val_acc_pooled_history)
         acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
         acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
-        malicious_participation_rate = self.current_s_m / self.malicious_clients_num      
+        malicious_update_dict, malicious_update, action, state, noise_std = pcac_attack(
+            fedon=self,
+            mali_direction=mali_direction,
+            benign_update=benign_update,
+            avg_cos_distance=avg_cos_distance,
+            avg_l2_distance=avg_l2_distance,
+            avg_update_norm=avg_l2_norm,
+            prev_acc=acc_prev,
+            curr_acc=acc_curr,
+            iteration=round_number
+        )
 
-        if self.rl_mode == "BO":
-            malicious_update_dict, malicious_update, reward_vector, action = bo_attack(
-                fedoda=self,
-                mali_direction=mali_direction,
-                benign_update=benign_update,
-                avg_cos_distance=avg_cos_distance,
-                avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_l2_norm,
-                prev_acc=acc_prev,
-                curr_acc=acc_curr
+        self.logger.info(
+            f"[FedON] PCAC noise_std: {noise_std:.4f}, "
+            f"action: {[f'{float(x):.4f}' for x in action]}, "
+            f"state: {[f'{float(x):.4f}' for x in state]}"
+        )
+
+        if self.prev_acc is not None and not self.skipped_last_round:
+            r1 = 1.0 - acc_curr  # Final goal
+            delta_acc = acc_curr - self.prev_acc  # Positive = model improved (bad), Negative = model got worse (good)
+
+            alpha = 0.8  # controls curvature of r2 reward shaping
+            r2 = -np.sign(delta_acc) * (abs(delta_acc) ** alpha)
+            r2 = np.clip(r2, -1.0, 1.0)
+            r3 = 0
+            reward_vector = [r1, r2]
+            preference_vector = self.pcac_preference_vector.cpu().numpy()
+            
+            reward_scalar = np.dot(reward_vector, preference_vector)
+            reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)
+
+            reward_valid = self.prev_acc is not None and not self.skipped_last_round
+            self.pcac_agent.update_noise_std(
+                reward_scalar,
+                reward_threshold=0.01,
+                reward_valid=reward_valid
             )
-            r1, r2, r3 = reward_vector.tolist()
-            reward_scalar = r2
-        elif self.rl_mode == "BI":  # Default BI mode
-            self.epsilon = self.scaling_l2 * avg_l2_norm
-            malicious_update_dict, malicious_update = bi_attack(
-                self, mali_direction, benign_update,
-                avg_cos_distance, avg_l2_norm
-            )
-        elif self.rl_mode == "RANDOM":
-            cos_dist_mali_benign = 1 - F.cosine_similarity(
-                        mali_direction.unsqueeze(0), benign_update.unsqueeze(0), dim=1
-                        ).item()
-            malicious_update_dict, malicious_update, action, state, noise_std = self.random_base_attack(
-                            fedoda=self,
-                            mali_direction=mali_direction,
-                            benign_update=benign_update,
-                            avg_cos_distance=avg_cos_distance,
-                            avg_l2_distance=avg_l2_distance,
-                            avg_update_norm=avg_l2_norm,
-                            cos_dist_mali_benign=cos_dist_mali_benign,
-                            round_number=round_number
-                        )
-        elif self.rl_mode == "PCAC":
-            malicious_update_dict, malicious_update, action, state, noise_std = pcac_attack(
-                fedoda=self,
-                mali_direction=mali_direction,
-                benign_update=benign_update,
-                avg_cos_distance=avg_cos_distance,
-                avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_l2_norm,
-                prev_acc=acc_prev,
-                curr_acc=acc_curr,
-                iteration=round_number
-            )
+            self.pcac_agent.update_epsilon()
+
+            action_tensor = torch.tensor(action, dtype=torch.float32).to(self.device)
+            prev_action_tensor = torch.tensor(self.prev_action, dtype=torch.float32).to(self.device)
+            action_diff = torch.norm(action_tensor - prev_action_tensor).item()
 
             self.logger.info(
-                f"[FedON] PCAC noise_std: {noise_std:.4f}, "
-                f"action: {[f'{float(x):.4f}' for x in action]}, "
-                f"state: {[f'{float(x):.4f}' for x in state]}"
+                f"[FedON] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
+                f"[PCAC] ΔAction norm: {action_diff:.4f}, "
+                f"[FedON] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
             )
 
-            if self.prev_acc is not None and not self.skipped_last_round:
-                # --- Compute reward components ---
-                # r1 = 1.0 - acc_curr
-                # r2 = (self.prev_acc - acc_curr) / 0.2
-                # r2 = np.clip(r2, -1.0, 1.0)
-                # reward_vector = [r1, r2]
-                # preference_vector = self.pcac_preference_vector.cpu().numpy()
-                
-                # --- Compute reward components ---
-                r1 = 1.0 - acc_curr  # Final goal
-                delta_acc = acc_curr - self.prev_acc  # Positive = model improved (bad), Negative = model got worse (good)
+            self.pcac_agent.store_transition(
+                s=self.prev_state,
+                a=self.prev_action,
+                r=reward_vector,
+                s_next=state,
+                preference_vector=self.pcac_preference_vector
+            )
 
-                alpha = 0.8  # controls curvature of r2 reward shaping
-                r2 = -np.sign(delta_acc) * (abs(delta_acc) ** alpha)
-                r2 = np.clip(r2, -1.0, 1.0)
-                r3 = 0
-                reward_vector = [r1, r2]
-                preference_vector = self.pcac_preference_vector.cpu().numpy()
-                
-                reward_scalar = np.dot(reward_vector, preference_vector)
-                reward_scalar = np.clip(reward_scalar * 3.0, 0.0, 1.0)
+            for _ in range(self.pcac_update_steps):
+                self.pcac_agent.update()
 
-                reward_valid = self.prev_acc is not None and not self.skipped_last_round
-                self.pcac_agent.update_noise_std(
-                    reward_scalar,
-                    reward_threshold=0.01,
-                    reward_valid=reward_valid
-                )
-                self.pcac_agent.update_epsilon()
-
-                action_tensor = torch.tensor(action, dtype=torch.float32).to(self.device)
-                prev_action_tensor = torch.tensor(self.prev_action, dtype=torch.float32).to(self.device)
-                action_diff = torch.norm(action_tensor - prev_action_tensor).item()
-
-                self.logger.info(
-                    f"[FedON] [PCAC] acc_prev: {self.prev_acc:.4f}, acc_curr: {acc_curr:.4f}, r1: {r1:.4f}, r2: {r2:.4f}, "
-                    f"[PCAC] ΔAction norm: {action_diff:.4f}, "
-                    f"[FedON] [PCAC] preference: {preference_vector.tolist()}, reward_scalar: {reward_scalar:.4f}, noise_std: {self.pcac_agent.noise_std:.4f}"
-                )
-
-                self.pcac_agent.store_transition(
-                    s=self.prev_state,
-                    a=self.prev_action,
-                    r=reward_vector,
-                    s_next=state,
-                    preference_vector=self.pcac_preference_vector
-                )
-
-                # PCAC agent training
-                for _ in range(self.pcac_update_steps):
-                    self.pcac_agent.update()
-
-            else:
-                # First iteration OR previous attack skipped — no reward or training
-                self.logger.info("[FedON][PCAC] Skipping reward and training — no valid feedback from last round.")
-                r1 = 0.0
-                r2 = 0.0
-                r3 = 0.0
-                reward_scalar = 0.0
-                
-            self.prev_state = state
-            self.prev_action = action
-            self.prev_acc = acc_curr
+        else:
+            self.logger.info("[FedON][PCAC] Skipping reward and training — no valid feedback from last round.")
+            r1 = 0.0
+            r2 = 0.0
+            r3 = 0.0
+            reward_scalar = 0.0
             
-        elif self.rl_mode == "MOQ":
-            malicious_update_dict, malicious_update, action, state = moq_attack(
-                fedoda=self,
-                mali_direction=mali_direction,
-                benign_update=benign_update,
-                avg_cos_distance=avg_cos_distance,
-                avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_l2_norm,
-                prev_acc=acc_prev,
-                curr_acc=acc_curr
-            )
-            self.logger.info(f"[FedON] MOQ action: {[float(x) for x in action]}, state: {state}")
-
-            # === Step 5: Compute reward from previous round
-            if self.prev_acc is not None:
-                r1 = 1.0 - acc_curr
-                r2 = (self.prev_acc - acc_curr) * 5
-                r3 = 0
-                reward_vector = [r1, r2]
-                
-                self.logger.info(f"[FedON] Reward r1: {r1:.4f}, r2: {r2:.4f} (prev_acc={self.prev_acc:.4f}, acc_curr={acc_curr:.4f})")
-                old_eps, new_eps = self.moq_agent.adjust_epsilon(
-                    r1=r1,
-                    r2=r2,
-                    r1_threshold=0.5,
-                    r2_threshold=0.15,
-                    epsilon_cap=0.5
-                )
-                self.logger.info(f"[FedON] Adjusted epsilon: {old_eps:.4f} → {new_eps:.4f}")
-                
-                scalar_reward = np.dot(reward_vector, self.moq_preference_vector.numpy())
-                self.logger.info(f"[FedON] Scalar reward: {scalar_reward:.4f}")
-                
-                self.moq_agent.update(
-                    s=self.prev_state,
-                    a=self.prev_action,
-                    r=reward_vector,
-                    s_next=state,
-                    preference_vector= self.moq_preference_vector
-                )
-            else:
-                r1 = 0
-                r2 = 0
-                r3 = 0
-                reward_vector = [r1, r2]
-            reward_scalar = r1 + r2 
-
-            # === Step 6: Save for next round
-            self.prev_state = state
-            self.prev_action = action
-            self.prev_acc = acc_curr
-
-            round_number = len(self.val_acc_pooled_history)
-
-            if round_number % 5 == 0:
-                with torch.no_grad():
-                    device = self.moq_agent.device
-                    state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-                    preference_vector = self.moq_preference_vector.to(device)
-
-                    action_tensor = torch.tensor(self.moq_agent.action_space, dtype=torch.float32).to(device)
-                    state_rep = state_tensor.repeat(len(self.moq_agent.action_space), 1)
-
-                    q_values_vec = self.moq_agent.q_net(state_rep, action_tensor)  # [N, reward_dim]
-                    scalar_q_values = torch.matmul(q_values_vec, preference_vector)  # [N]
-
-                    best_action_idx = torch.argmax(scalar_q_values).item()
-                    best_action = self.moq_agent.action_space[best_action_idx]
-
-                    self.logger.info(f"[FedON][Policy Check] Round {round_number}: Best Action (Q*) = {best_action}")
-
-        elif self.rl_mode == "PPO":
-            # === Step 0: Measure current state
-            curr_state = torch.tensor([
-                acc_prev,
-                avg_cos_distance / 2.0,
-                avg_l2_norm / 100.0,
-                round_number / 500.0,
-                malicious_participation_rate
-            ], dtype=torch.float32)
-
-            # === Step 1: Select action for current round
-            action, log_prob = self.ppo_agent.select_action(curr_state)
-
-            # Save current state/action/log_prob for next round
-            self.ppo_prev_state = curr_state
-            self.ppo_prev_action = action
-            self.ppo_prev_log_prob = log_prob
-
-            # === Step 2: Perform attack using selected action → get reward from here
-            malicious_update_dict, malicious_update, reward_vector = guided_attack_from_action(
-                fedoda=self,
-                round_number=round_number,
-                prev_acc=acc_prev,
-                curr_acc=acc_curr,
-                avg_cos_distance=avg_cos_distance,
-                avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_l2_norm,
-                avg_full_model_cos=avg_full_model_cos,
-                malicious_participation_rate=malicious_participation_rate,
-                mali_direction=mali_direction,
-                benign_update=benign_update,
-                action=action,
-                log_prefix="[PPO]"
-            )
-            
-            # ✅ Always unpack reward_vector
-            r1, r2, r3 = reward_vector.tolist()
-
-            # === Step 3: Log previous transition with reward from current attack
-            if hasattr(self, "ppo_prev_state"):
-                reward_scalar = self.ppo_agent.combine_reward(round_number - 1, reward_vector)
-
-                self.logger.info(
-                    f"[FedON] PPO reward for previous round {round_number - 1}: {reward_scalar:.4f}"
-                )
-
-                self.ppo_agent.buffer.append((
-                    self.ppo_prev_state.detach(),
-                    self.ppo_prev_action.detach(),
-                    reward_vector.detach(),
-                    self.ppo_prev_log_prob.detach()
-                ))
-            else:
-                self.logger.warning("[FedON] PPO previous state/action/log_prob not set. Skipping logging.")
-                reward_scalar = 0 
-
-            # === Step 4: Train PPO every few rounds
-            if round_number >= 5 and round_number % 2 == 0:
-                self.logger.info(f"[FedON][PPO] Training PPO agent at round {round_number}")
-                self.ppo_agent.train(memory=self.ppo_agent.buffer, round_number=round_number)
-                self.ppo_agent.buffer.clear()
-        elif self.rl_mode == "ES":
-            round_number = len(self.val_acc_pooled_history)
-            acc_curr = self.val_acc_pooled_history[-1] if round_number > 1 else 0
-            acc_prev = self.val_acc_pooled_history[-2] if round_number > 1 else acc_curr
-
-            # === Step 0: Initialize ES agent if not yet
-            if not hasattr(self, "es_agent"):
-                from es_agent import ESAgent
-                self.es_agent = ESAgent(
-                    init_action=np.array([0.0, -1.0]),
-                    sigma=0.1,
-                    alpha=0.05,
-                    bounds=[(-1.0, 1.0), (-1.0, 1.0)]  # per-dimension bounds
-                )
-                self.logger.info("[FedON][ES] Initialized Evolution Strategy Agent.")
-
-            # === Step 1: Sample ONE action
-            action = self.es_agent.sample_action()
-
-            # === Step 2: Run attack
-            malicious_update_dict, malicious_update, reward_vector = guided_attack_from_action(
-                fedoda=self,
-                round_number=round_number,
-                prev_acc=acc_prev,
-                curr_acc=acc_curr,
-                avg_cos_distance=avg_cos_distance,
-                avg_l2_distance=avg_l2_distance,
-                avg_update_norm=avg_l2_norm,
-                avg_full_model_cos=avg_full_model_cos,
-                malicious_participation_rate=self.current_s_m / self.malicious_clients_num,
-                mali_direction=mali_direction,
-                benign_update=benign_update,
-                action=torch.tensor(action, dtype=torch.float32),
-                log_prefix="[ES]"
-            )
-
-            # ✅ Always unpack reward_vector
-            r1, r2, r3 = reward_vector.tolist()
-            reward_scalar = float(r1 + r2 + r3)
+        self.prev_state = state
+        self.prev_action = action
+        self.prev_acc = acc_curr
 
         # Shared logging
         self.log_attack_statistics(
@@ -1990,75 +1722,6 @@ class FedON:
         self.prev_malicious_update = malicious_update.clone().detach()
 
         return malicious_update_dict, malicious_update
-    
-
-
-    def random_base_attack(self,
-        mali_direction,
-        benign_update,
-        avg_cos_distance,
-        avg_l2_distance,
-        avg_update_norm,
-        cos_dist_mali_benign,
-        round_number
-    ):
-        """
-        Perform a baseline PCAC-style attack using randomly sampled L2 and cosine constraints.
-
-        Args:
-            fedoda: The attacker object (must have .mali_update_craft_l2_cos method and .logger)
-            mali_direction: Direction vector for malicious update
-            benign_update: Average benign update to mimic
-            avg_cos_distance: Average cosine distance between benign updates
-            avg_l2_distance: Average L2 distance between benign updates
-            avg_update_norm: Average L2 norm of benign updates
-            cos_dist_mali_benign: Cosine distance between malicious and benign updates
-            round_number: Current training round number
-
-        Returns:
-            malicious_update_dict: Dict form of crafted malicious model update
-            malicious_update: Flattened malicious update tensor
-            action: Sampled action vector [L2_scale, Cos_bound]
-            state: Dummy state (zeros)
-            noise_std: Standard deviation of noise added in crafting
-        """
-        # ----> Sample random L2 scaling in [0.5, 20.0]
-        scaling_l2 = np.random.uniform(0.5, 20.0)
-        self.epsilon = scaling_l2 * avg_update_norm
-
-        # ----> Sample cosine upper bound in [0, cos_dist_mali_benign - avg_cos_distance / 2]
-        cos_ub = max(0.0, min(2.0, cos_dist_mali_benign - avg_cos_distance / 2)) # to change the negative begining value
-        scaling_cos = np.random.uniform(0.0, cos_ub)
-
-        # Combine into action vector
-        action = np.array([scaling_l2, scaling_cos])
-
-        self.logger.info(
-            f"[random_base] Round {round_number} | Sampled Action -> L2: {scaling_l2:.4f}, Cos: {scaling_cos:.4f}"
-        )
-
-        # ----> Craft malicious update using the same method as PCAC
-        malicious_update_dict, malicious_update, noise_std = self.mali_update_craft_l2_cos(
-            model=self.server_model,
-            benign_update=benign_update,
-            mali_update=mali_direction,
-            scaling_cos_dist=scaling_cos,
-            epsilon=self.epsilon,
-            harm_threshold=0.0,
-            retry_limit=5,
-            epsilon_growth=1.0,
-            cos_growth=0.9,
-            mode="PROJ",
-            pgd_steps=20,
-            pgd_lr=0.05
-        )
-
-        # Dummy state (zeros), for consistency with RL methods
-        state = np.zeros(self.state_dim) if hasattr(self, 'state_dim') else None
-
-        return malicious_update_dict, malicious_update, action, state, noise_std
-
-
     def optimized_project_to_cosine(self, v, ref, desired_cos_dist, alpha=0.1):
         """
         Adjust vector `v` directly during gradient update to maintain desired cosine distance.

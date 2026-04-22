@@ -220,8 +220,8 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         malicious_client_ids = [] # malicious clients' ids
         mali_labels = []
 
-    if attack_method == 'FedOda':
-        # create the pooled dataset for FedOda
+    if is_fedon_attack(attack_method):
+        # create the pooled dataset for FedON
         pooled_data = []
         malicious_data_lengths = []
     
@@ -254,8 +254,10 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         pooled_loader = DataLoader(pooled_dataset, batch_size=512, shuffle=True, num_workers=1,  persistent_workers=True, pin_memory=False)
         original_vali_loader = DataLoader(fl_test, client_batch_size, shuffle=True, num_workers=1,  persistent_workers=True, pin_memory=False)
         
-        # object for FedOda class
-        foda = FedON(model_fn=model_fn, 
+        fedon_cfg = params['fedon']
+
+        # object for FedON class
+        fedon_attacker = FedON(model_fn=model_fn, 
                     device=device,
                     pooled_loader=pooled_loader,
                     vali_loader=original_vali_loader,
@@ -263,11 +265,11 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     malicious_client_ids=malicious_client_ids,
                     fl_mali_data_dict = fl_mali_data_dict,
                     total_malicious=malicious_num,
-                    E=params['fedoda']['E'],
-                    scaling_l2=params['fedoda']['scaling_factor'],
-                    reduce_factor=params['fedoda']['reduce_factor'],
-                    increase_factor=params['fedoda']['increase_factor'],
-                    threshold=params['fedoda']['threshold'],
+                    E=fedon_cfg['E'],
+                    scaling_l2=fedon_cfg['scaling_factor'],
+                    reduce_factor=fedon_cfg['reduce_factor'],
+                    increase_factor=fedon_cfg['increase_factor'],
+                    threshold=fedon_cfg['threshold'],
                     client_learning_rate=c_lr,
                     client_data_size=mali_client_data_size,
                     client_batch_size=client_batch_size,
@@ -277,7 +279,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     attack_config=params.get('attack', {})
                     )
     else:
-        foda = None
+        fedon_attacker = None
         
     loss_acc_csv_header = ["iter", "loss", "accuracy"]
     loss_acc_csv = CsvLogging(f"{timestamp}_loss_acc", exp_dir, loss_acc_csv_header)
@@ -350,7 +352,7 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
         c_grad_dict = fl_iteration(iter, client_selection, malicious_client_ids,
                                    attack_method, c_epochs, fl_data_dict, mco_dict,
                                    client_batch_size, dba_poisoning_per_batch,
-                                   fedoda_attacker=foda, malicious_fraction=malicious_fraction,
+                                   fedon_attacker=fedon_attacker, malicious_fraction=malicious_fraction,
                                    device=device)
 
         # Step global scheduler
@@ -546,14 +548,14 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
     # path_c_model=f"{exp_dir}/c_model_{iter}.pt"
     # torch.save(mco_dict[-1]["c_model"].state_dict(), path_c_model)
 
-    # Extract FedOda attack metrics (if applicable)
-    if foda:
-        fedoda_metrics = sanitize_attack_metrics(foda.full_history)
-        logger.info(f"FedOda metrics1: {fedoda_metrics}")
+    # Extract FedON attack metrics (if applicable)
+    if fedon_attacker:
+        fedon_metrics = sanitize_attack_metrics(fedon_attacker.full_history)
+        logger.info(f"FedON metrics1: {fedon_metrics}")
     else:
-        fedoda_metrics = None
+        fedon_metrics = None
 
-    logger.info(f"fedoda_metrics: {fedoda_metrics}")
+    logger.info(f"fedon_metrics: {fedon_metrics}")
     logger.info(f"-----------{timestamp} FL Experiment Finished-----------")
     logger.info(f"Experiment directory: {exp_dir}")
     logger.handlers.clear()
@@ -564,14 +566,14 @@ def fl_training(fl_train, fl_test, params, image_size, exp_dir, timestamp):
                     per_class_acc_vail_hist, 
                     attack_success_hist,
                     mistake_history,
-                    fedoda_metrics)
+                    fedon_metrics)
 
     return loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, \
         selected_clients_per_class_hist, clients_eval_hist, attack_success_hist, fid_avg
 
 
 def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_acc_vail_hist, 
-                    attack_success_hist, mistake_history, fedoda_metrics=None):
+                    attack_success_hist, mistake_history, fedon_metrics=None):
     try:
         # Determine non-IID parameter
         if params['noniid_type'] == 'label_skew':
@@ -625,13 +627,13 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             save_dir=plots_dir
         )
 
-        # --- Plot full history from FedOda ---
-        if fedoda_metrics:
-            print("\nDEBUG: FedOda metrics keys:", fedoda_metrics.keys())  # Check available keys
-            # print("DEBUG: norm_scaling_l2 values:", fedoda_metrics.get("norm_scaling_l2", "MISSING"))
-            # print("DEBUG: mapped_scaling_l2 values:", fedoda_metrics.get("mapped_scaling_l2", "MISSING"))      
+        # --- Plot full history from FedON ---
+        if fedon_metrics:
+            print("\nDEBUG: FedON metrics keys:", fedon_metrics.keys())  # Check available keys
+            # print("DEBUG: norm_scaling_l2 values:", fedon_metrics.get("norm_scaling_l2", "MISSING"))
+            # print("DEBUG: mapped_scaling_l2 values:", fedon_metrics.get("mapped_scaling_l2", "MISSING"))      
             
-            def try_get(key): return fedoda_metrics.get(key, [])
+            def try_get(key): return fedon_metrics.get(key, [])
 
             # Group 2: benign_norm and server_update_norm
             plot_multi_curves(
@@ -651,8 +653,8 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
                     "Reward 3 (r3)": try_get("r3"),
                     "Accuracy": acc_vail_hist  # Assuming this is accessible
                 },
-                title="PPO Rewards and Accuracy",
-                filename="ppo_rewards_and_accuracy",
+                title="PCAC Rewards and Accuracy",
+                filename="pcac_rewards_and_accuracy",
                 save_dir=plots_dir,
             )
 
@@ -672,11 +674,11 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             # Group 7: Normalized scaling factors
             plot_twin_curves(
                 {
-                    "L2 Scaling (norm)": fedoda_metrics["norm_scaling_l2"],
-                    "Cos Scaling (norm)": fedoda_metrics["norm_scaling_cos"]
+                    "L2 Scaling (norm)": fedon_metrics["norm_scaling_l2"],
+                    "Cos Scaling (norm)": fedon_metrics["norm_scaling_cos"]
                 },
-                title="BO: Normalized Scaling Factors",
-                filename="bo_normalized_scaling",
+                title="PCAC: Normalized Scaling Factors",
+                filename="pcac_normalized_scaling",
                 save_dir=plots_dir,
                 ylabel1="L2 Scaling (normalized)",
                 ylabel2="Cosine Scaling (normalized)"
@@ -685,11 +687,11 @@ def plot_fl_results(params, exp_dir, loss_vail_hist, acc_vail_hist, per_class_ac
             # Group 8: Mapped scaling factors
             plot_twin_curves(
                 {
-                    "L2 Scaling (mapped)": fedoda_metrics["mapped_scaling_l2"],
-                    "Cos Scaling (mapped)": fedoda_metrics["mapped_scaling_cos"]
+                    "L2 Scaling (mapped)": fedon_metrics["mapped_scaling_l2"],
+                    "Cos Scaling (mapped)": fedon_metrics["mapped_scaling_cos"]
                 },
-                title="BO: Mapped Scaling Factors",
-                filename="bo_mapped_scaling",
+                title="PCAC: Mapped Scaling Factors",
+                filename="pcac_mapped_scaling",
                 save_dir=plots_dir,
                 ylabel1="L2 Scaling (mapped)",
                 ylabel2="Cosine Scaling (mapped)"
@@ -739,4 +741,3 @@ def has_nan_state_dict(state_dict):
                 print(f"[DEBUG] Inf in model state key: {k}")
                 return True
     return False
-

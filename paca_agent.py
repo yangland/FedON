@@ -92,6 +92,7 @@ class PCACAgent:
         self.epsilon_decay = epsilon_decay
 
         self.prev_action = torch.zeros(action_dim).to(self.device)  # initialize to 0
+        self.no_improvement_counter = 0
 
 
     # def update_noise_std_old(self, reward_scalar, reward_threshold=0.01):

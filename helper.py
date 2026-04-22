@@ -27,10 +27,6 @@ from utilities import (
     safe_model_state_dict
 )
 
-from models.ch_mnist import Chmnist_13L
-from models.cifar10_18l import Cifar10_18L
-from models.convnet import ConvNet, channel_dict
-from models.mnist_6l import Mnist_6L
 from models.model_utils import get_model
 import torch.nn as nn
 import torch.nn.functional as F
@@ -38,23 +34,30 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, MultiStepLR
 from collections import OrderedDict
 
 
+FEDON_ATTACK_NAMES = {"FedON"}
+
+
+def is_fedon_attack(attack_method):
+    return attack_method in FEDON_ATTACK_NAMES
+
+
 def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_epochs, 
                     fl_data_dict, mco_dict, batch_size, dba_poisoning_per_batch=0.2, 
-                    fedoda_attacker=None, malicious_fraction=None, device=None):
+                    fedon_attacker=None, malicious_fraction=None, device=None):
     mpaf_attacker = None # initialize
     # Add at start of function
     torch.cuda.empty_cache()
     
-    if attack_method == 'FedOda':
+    if is_fedon_attack(attack_method):
         selected_malicious_ids = set(client_selection) & set(malicious_client_ids)
-        if fedoda_attacker.server_model is None:
-            fedoda_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
+        if fedon_attacker.server_model is None:
+            fedon_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
         else:
-            fedoda_attacker.previous_server_model = deepcopy(fedoda_attacker.server_model)
-            fedoda_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
+            fedon_attacker.previous_server_model = deepcopy(fedon_attacker.server_model)
+            fedon_attacker.server_model = deepcopy(mco_dict[-1]["c_model"])
 
             
-        fedoda_attacker.current_s_m = len(selected_malicious_ids)
+        fedon_attacker.current_s_m = len(selected_malicious_ids)
     elif attack_method == 'MPAF':
         mpaf_attacker = MPAFAttack(model_type="c_model")
 
@@ -72,7 +75,7 @@ def fl_iteration(iter, client_selection, malicious_client_ids, attack_method, c_
 
     # process for both benign and malicious clients
     c_grad_dict= grad_process_c_model(mco_dict, client_selection, c_sd_before,
-                                            malicious_client_ids, attack_method, fedoda_attacker,
+                                            malicious_client_ids, attack_method, fedon_attacker,
                                               mpaf_attacker, malicious_fraction,
                                              batch_size, c_epochs, device)
     
@@ -132,11 +135,11 @@ attack_magnitude_mapping = {
     'MinSum': 1,
     'LIE': 1,
     'dba': 3,
-    'FedON': 1
+    'FedON': 1,
 }
 
 def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_client_ids, attack_method,
-                         FedOda_class, mpaf_attacker, malicious_fraction, 
+                         fedon_attacker, mpaf_attacker, malicious_fraction, 
                          batch_size, c_epochs, device):
     c_grad_dict = {}
 
@@ -150,13 +153,13 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
     # attack_magnitude affecting the c model
     attack_magnitude = attack_magnitude_mapping.get(attack_method, 1)
     
-    if attack_method == 'FedOda':
-        if FedOda_class is None:
-            raise ValueError("FedON_class is not initialized.")
+    if is_fedon_attack(attack_method):
+        if fedon_attacker is None:
+            raise ValueError("FedON attacker is not initialized.")
 
-        foda_update_dict, malicious_update = \
-            FedOda_class.attack(
-                sample_num=3, 
+        fedon_update_dict, malicious_update = \
+            fedon_attacker.attack(
+                sample_num=4, 
                 batch_size=batch_size, 
                 mco_dict=mco_dict, 
                 c_epochs=c_epochs
@@ -204,9 +207,9 @@ def grad_process_c_model(mco_dict, client_selection, c_sd_before, malicious_clie
             malicious_updates = mpaf_attacker(malicious_client_ids, mco_dict, magnitude=attack_magnitude)
             for client_id in malicious_client_ids:
                 c_grad_dict[client_id] = malicious_updates[client_id]
-        elif attack_method == 'FedOda':
+        elif is_fedon_attack(attack_method):
             # logger.info("Applying FedON attack")
-            c_grad_dict[client_id] = foda_update_dict
+            c_grad_dict[client_id] = fedon_update_dict
         else:
             logger.info(f"Unknown attack method {attack_method}")
 
@@ -568,7 +571,7 @@ def create_malicious_data(client_num, malicious_num, fl_data_dict, attack_method
             mali_labels = [m_label1, m_label2]  
         elif attack_method == 'none':
             mali_labels = []
-        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum', 'FedOda']:
+        elif attack_method in ['reverse_grad', 'fang', 'LIE', 'MPAF', 'MinMax', 'MinSum'] or is_fedon_attack(attack_method):
             mali_labels = list(range(class_num))
         else:
             print("attack_method unknown")
