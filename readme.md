@@ -2,9 +2,9 @@
 
 Code for the paper published at **ICASSP 2026**:
 
-**Turn the Black-Box White: Inferring Aggregation Rules in Federated Learning through Multi-Trigger Geometry-Aware Backdoors**
+**FedON: Black-Box Untargeted Model Poisoning via Multi-Objective Reinforcement Learning**
 
-[IEEE Xplore](https://doi.org/10.1109/ICASSP55912.2026.11463191)
+[IEEE Xplore](https://doi.org/10.1109/ICASSP55912.2026.11463752)
 
 
 ## Setup
