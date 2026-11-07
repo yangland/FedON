@@ -1,8 +1,11 @@
 # FedON
 
-Code for the ICASSP 2026 paper:
+Code for the paper published at **ICASSP 2026**:
 
-**FedON: Black-Box Untargeted Model Poisoning via Multi-Objective Reinforcement Learning**
+**Turn the Black-Box White: Inferring Aggregation Rules in Federated Learning through Multi-Trigger Geometry-Aware Backdoors**
+
+[IEEE Xplore](https://doi.org/10.1109/ICASSP55912.2026.11463191)
+
 
 ## Setup
 
@@ -52,4 +55,15 @@ Logs and plots are written to `logs_fl/`.
 
 ## Citation
 
-Citation information will be added after the proceedings entry is available.
+If you find this work useful, please cite:
+
+```bibtex
+@inproceedings{li2026fedon,
+  title     = {FedON: Black-Box Untargeted Model Poisoning via Multi-Objective Reinforcement Learning},
+  author    = {Li, Yang and Kong, Adams Wai Kin},
+  booktitle = {2026 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)},
+  year      = {2026},
+  publisher = {IEEE},
+  doi       = {10.1109/ICASSP55912.2026.11463752}
+}
+```
